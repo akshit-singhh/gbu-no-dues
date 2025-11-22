@@ -1,28 +1,28 @@
-# Base image
-FROM python:3.10-slim
+# Use a slim Python image
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for psycopg2 and general builds
+# Install system dependencies for Python packages
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libpq-dev \
     gcc \
     curl \
     wget \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
+# Copy requirements and install dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project code
+# Copy the entire project
 COPY . .
 
-# Expose port 8000
+# Expose the port Leapcell will use
 EXPOSE 8000
 
-# Start FastAPI
+# Start FastAPI app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
