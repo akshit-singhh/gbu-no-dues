@@ -1,6 +1,6 @@
 # app/core/database.py
-
 import ssl
+import os
 import logging
 from typing import AsyncGenerator
 
@@ -10,48 +10,42 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from app.core.config import settings
 
-# ------------------------------------------------------------
-# Logger setup
-# ------------------------------------------------------------
-logger = logging.getLogger("uvicorn")  # integrates with FastAPI/Uvicorn logs
+logger = logging.getLogger("uvicorn")
 
 # ------------------------------------------------------------
-# SSL Setup
+# SSL handling for production
 # ------------------------------------------------------------
-def _make_ssl_context() -> ssl.SSLContext:
-    """
-    Creates SSL context based on environment and settings.
-    - In dev, SSL verification is disabled by default.
-    - In production, SSL verification is enabled.
-    """
-    ctx = ssl.create_default_context()
-    # Safe fallback: ensure DB_SSL_VERIFY is a bool
-    ssl_verify = bool(getattr(settings, "DB_SSL_VERIFY", True))
+connect_args = {}
 
-    # If in development, optionally override SSL verification
-    if getattr(settings, "ENV", "development") == "development":
-        ssl_verify = False
+if settings.ENV == "prod":
+    if settings.DB_SSL_VERIFY:
+        # Path to custom CA certificate
+        cafile_path = os.path.join(os.path.dirname(__file__), "..", "..", "certs", "prod-ca-2021.crt")
+        cafile_path = os.path.abspath(cafile_path)
+        if not os.path.exists(cafile_path):
+            logger.error("❌ CA certificate not found at: %s", cafile_path)
+            raise FileNotFoundError(f"CA certificate not found at: {cafile_path}")
 
-    if not ssl_verify:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        logger.warning("⚠️ SSL verification is DISABLED (dev mode).")
+        ssl_context = ssl.create_default_context(cafile=cafile_path)
+        ssl_context.check_hostname = True
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        connect_args = {"ssl": ssl_context}
+        logger.info("🔒 Using SSL with custom CA certificate at %s", cafile_path)
     else:
-        ctx.check_hostname = True
-        ctx.verify_mode = ssl.CERT_REQUIRED
-
-    return ctx
+        connect_args = {"ssl": False}  # insecure for dev/testing
+        logger.warning("⚠️ DB_SSL_VERIFY is False. SSL verification disabled!")
+else:
+    connect_args = {"ssl": False}  # local/dev mode
+    logger.info("⚠️ Running in development mode. SSL disabled.")
 
 # ------------------------------------------------------------
-# Engine Config
+# Async Engine
 # ------------------------------------------------------------
-_connect_args = {"ssl": _make_ssl_context()}
-
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
-    connect_args=_connect_args,
+    connect_args=connect_args
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -59,38 +53,30 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 # ------------------------------------------------------------
-# Import all models (important for metadata)
+# Import all models
 # ------------------------------------------------------------
 from app.models.department import Department
 from app.models.user import User
 from app.models.student import Student
 from app.models.application import Application
-# Add other models if needed:
-# from app.models.application_stage import ApplicationStage
-# from app.models.audit_log import AuditLog
-# from app.models.certificate import Certificate
 
 # ------------------------------------------------------------
-# Dependency for FastAPI routes
+# FastAPI Dependency
 # ------------------------------------------------------------
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
 
 # ------------------------------------------------------------
-# Create all tables (development only)
+# Create tables (development only)
 # ------------------------------------------------------------
 async def init_db() -> None:
-    """
-    Creates all tables declared via SQLModel.
-    WARNING: Do NOT use in production. Use Alembic for migrations.
-    """
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
     logger.info("✅ Database tables created (development only).")
 
 # ------------------------------------------------------------
-# Test DB Connection (Startup)
+# Test connection
 # ------------------------------------------------------------
 async def test_connection() -> None:
     try:

@@ -50,3 +50,6 @@ Thumbs.db
 # Docker
 *.log
 *.pid
+
+# SSL certificates
+certs/
