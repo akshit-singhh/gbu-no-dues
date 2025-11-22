@@ -46,3 +46,7 @@ Thumbs.db
 # Generated folders
  htmlcov/
  coverage.xml
+
+# Docker
+*.log
+*.pid
