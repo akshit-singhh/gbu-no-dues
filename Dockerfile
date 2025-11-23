@@ -21,10 +21,16 @@ RUN pip install --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Create a non-root user for security
+RUN useradd -m fastapiuser
+
 # Copy the entire project
 COPY . .
 
-# Expose the port Leapcell will use
+# Change the user to the non-root user
+USER fastapiuser
+
+# Expose the port FastAPI will use
 EXPOSE 8000
 
 # Start FastAPI app

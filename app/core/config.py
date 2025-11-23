@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     SUPER_ADMIN_EMAIL: str | None = None
     SUPER_ADMIN_PASSWORD: str | None = None
     SUPER_ADMIN_NAME: str | None = "Super Admin"
-
+    db_ca_cert_path: str | None = None
     ENV: str = "dev"  # "dev" or "prod"
 
     class Config:

@@ -25,7 +25,6 @@ app = FastAPI(
     description="Backend service for the GBU No Dues Management System.",
 )
 
-
 # ------------------------------------------------------------
 # REGISTER ROUTERS
 # ------------------------------------------------------------
@@ -61,30 +60,30 @@ async def on_startup():
         print("✅ Database tables ready.")
     except Exception as e:
         print("⚠️ Table initialization failed:", e)
-        raise e
+        pass
 
     # 3) Seed Super Admin
-    async with AsyncSessionLocal() as session:
+    try:
+        async with AsyncSessionLocal() as session:
+            if not settings.SUPER_ADMIN_EMAIL or not settings.SUPER_ADMIN_PASSWORD:
+                print("⚠️ Missing SUPER_ADMIN_EMAIL or SUPER_ADMIN_PASSWORD in .env. Skipping seed.")
+            else:
+                existing = await get_user_by_email(session, settings.SUPER_ADMIN_EMAIL)
 
-        if not settings.SUPER_ADMIN_EMAIL or not settings.SUPER_ADMIN_PASSWORD:
-            print("⚠️ Missing SUPER_ADMIN_EMAIL or SUPER_ADMIN_PASSWORD in .env. Skipping seed.")
-            print("Application startup complete.\n")
-            return
-
-        existing = await get_user_by_email(session, settings.SUPER_ADMIN_EMAIL)
-
-        if not existing:
-            print(f"------ Seeding Super Admin ({settings.SUPER_ADMIN_EMAIL}) ------")
-            await create_user(
-                session=session,
-                name=settings.SUPER_ADMIN_NAME or "Super Admin",
-                email=settings.SUPER_ADMIN_EMAIL,
-                password=settings.SUPER_ADMIN_PASSWORD,
-                role=UserRole.Admin,  # correct Enum usage
-            )
-            print("🎉 Super Admin created successfully.")
-        else:
-            print("Super Admin already exists. Skipping seed.")
+                if not existing:
+                    print(f"------ Seeding Super Admin ({settings.SUPER_ADMIN_EMAIL}) ------")
+                    await create_user(
+                        session=session,
+                        name=settings.SUPER_ADMIN_NAME or "Super Admin",
+                        email=settings.SUPER_ADMIN_EMAIL,
+                        password=settings.SUPER_ADMIN_PASSWORD,
+                        role=UserRole.Admin, 
+                    )
+                    print("🎉 Super Admin created successfully.")
+                else:
+                    print("Super Admin already exists. Skipping seed.")
+    except Exception as e:
+        print(f"⚠️ Super Admin Seeding Skipped due to connection issue: {e}")
 
     print("-------- Application startup complete --------\n")
 

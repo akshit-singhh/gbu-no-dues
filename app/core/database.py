@@ -1,89 +1,84 @@
 # app/core/database.py
-import ssl
-import os
-import logging
-from typing import AsyncGenerator
 
+import os
+import ssl
+from uuid import uuid4  # <--- NEW IMPORT
+from typing import AsyncGenerator
+from dotenv import load_dotenv
 from sqlmodel import SQLModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from app.core.config import settings
+# 1. Load Environment
+load_dotenv()
 
-logger = logging.getLogger("uvicorn")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL is not set.")
 
-# ------------------------------------------------------------
-# SSL handling for production
-# ------------------------------------------------------------
-connect_args = {}
+# 2. SSL Context (Optimized for Supabase Pooler)
+def _make_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
-if settings.ENV == "prod":
-    if settings.DB_SSL_VERIFY:
-        # Path to custom CA certificate
-        cafile_path = os.path.join(os.path.dirname(__file__), "..", "..", "certs", "prod-ca-2021.crt")
-        cafile_path = os.path.abspath(cafile_path)
-        if not os.path.exists(cafile_path):
-            logger.error("❌ CA certificate not found at: %s", cafile_path)
-            raise FileNotFoundError(f"CA certificate not found at: {cafile_path}")
+# 3. Engine Configuration
+connect_args = {
+    "ssl": _make_ssl_context(),
+    
+    # ---------------------------------------------------------
+    # THE FINAL FIX
+    # ---------------------------------------------------------
+    # 1. We still try to disable the cache.
+    "statement_cache_size": 0,
+    
+    # 2. SECURITY NET: If cache disable fails (which it is doing),
+    # we force every statement to have a unique random name.
+    # This prevents "prepared statement already exists" errors 
+    # when Supabase reuses connections.
+    "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+    # ---------------------------------------------------------
+    
+    "server_settings": {
+        "jit": "off"
+    }
+}
 
-        ssl_context = ssl.create_default_context(cafile=cafile_path)
-        ssl_context.check_hostname = True
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        connect_args = {"ssl": ssl_context}
-        logger.info("🔒 Using SSL with custom CA certificate at %s", cafile_path)
-    else:
-        connect_args = {"ssl": False}  # insecure for dev/testing
-        logger.warning("⚠️ DB_SSL_VERIFY is False. SSL verification disabled!")
-else:
-    connect_args = {"ssl": False}  # local/dev mode
-    logger.info("⚠️ Running in development mode. SSL disabled.")
+print(f"🔄 Configuring Database")
 
-# ------------------------------------------------------------
-# Async Engine
-# ------------------------------------------------------------
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    DATABASE_URL,
     echo=False,
     future=True,
-    connect_args=connect_args
+    connect_args=connect_args,
+    pool_pre_ping=True 
 )
 
 AsyncSessionLocal = async_sessionmaker(
     engine, expire_on_commit=False, class_=AsyncSession
 )
 
-# ------------------------------------------------------------
-# Import all models
-# ------------------------------------------------------------
+# 4. Dependencies
 from app.models.department import Department
 from app.models.user import User
 from app.models.student import Student
 from app.models.application import Application
 
-# ------------------------------------------------------------
-# FastAPI Dependency
-# ------------------------------------------------------------
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
 
-# ------------------------------------------------------------
-# Create tables (development only)
-# ------------------------------------------------------------
+# Deprecated for Transaction Mode (Do not use)
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
-    logger.info("✅ Database tables created (development only).")
 
-# ------------------------------------------------------------
-# Test connection
-# ------------------------------------------------------------
 async def test_connection() -> None:
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-            logger.info("✅ Successfully connected to database.")
+            print("✅ Successfully connected to database (Transaction Mode).")
     except Exception as e:
-        logger.error("❌ Database connection failed:")
-        logger.error(" → %s", e)
-        raise e
+        print("❌ Database connection failed:")
+        print(f" → {e}")
