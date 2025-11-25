@@ -56,24 +56,37 @@ async def get_current_user(
 
 
 # ------------------------------------------------------------
-# Role-based access control (CASE-SAFE)
+# Role-based access control (CASE-SAFE, enum-safe)
 # ------------------------------------------------------------
 def role_required(*allowed_roles: UserRole):
     """
     Enforces that the current user has one of the allowed roles.
-    Matches using actual DB enum values (Admin, HOD, etc.)
+    Works with enum values and displays proper role in error messages.
     """
 
-    # convert enum to raw values
-    allowed = [r.value if isinstance(r, UserRole) else r for r in allowed_roles]
+    # Helper to normalize enum or string to lowercase
+    def normalize_role(role):
+        if isinstance(role, UserRole):
+            return role.value.strip().lower()
+        return str(role).strip().lower()
+
+    # Normalize allowed roles
+    normalized_allowed = set(normalize_role(r) for r in allowed_roles)
 
     async def checker(current_user: User = Depends(get_current_user)):
-        user_role = current_user.role  # string stored in DB
 
-        if user_role not in allowed:
+        # Normalize the user's role from DB
+        user_role_normalized = normalize_role(current_user.role)
+
+        # Optional Admin bypass: uncomment if Admin should always have access
+        # if user_role_normalized == "admin":
+        #     return current_user
+
+        # Check allowed roles
+        if user_role_normalized not in normalized_allowed:
             raise HTTPException(
                 status_code=403,
-                detail=f"Access denied for role '{user_role}'"
+                detail=f"Access denied for role '{current_user.role.value if isinstance(current_user.role, UserRole) else current_user.role}'"
             )
 
         return current_user
@@ -85,9 +98,7 @@ def role_required(*allowed_roles: UserRole):
 # Exposed dependencies for routers
 # ------------------------------------------------------------
 
-# Admin is the TRUE super-admin
 require_super_admin = role_required(UserRole.Admin)
-
 require_hod = role_required(UserRole.HOD)
 require_office = role_required(UserRole.Office)
 require_cell_member = role_required(UserRole.CellMember)

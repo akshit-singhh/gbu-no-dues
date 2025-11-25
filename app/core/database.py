@@ -2,83 +2,90 @@
 
 import os
 import ssl
-from uuid import uuid4  # <--- NEW IMPORT
-from typing import AsyncGenerator
 from dotenv import load_dotenv
+from typing import AsyncGenerator
+
 from sqlmodel import SQLModel
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine
+)
+from sqlalchemy.pool import NullPool
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-# 1. Load Environment
+# ----------------------------------------------------
+# Load environment
+# ----------------------------------------------------
 load_dotenv()
-
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("❌ DATABASE_URL is not set.")
 
-# 2. SSL Context (Optimized for Supabase Pooler)
-def _make_ssl_context() -> ssl.SSLContext:
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL is not set")
+
+
+# ----------------------------------------------------
+# SSL for Supabase Pooler
+# ----------------------------------------------------
+def make_ssl():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
-# 3. Engine Configuration
+
+# ----------------------------------------------------
+# AsyncPG SAFE Config (works with Supabase POOLER)
+# ----------------------------------------------------
 connect_args = {
-    "ssl": _make_ssl_context(),
-    
-    # ---------------------------------------------------------
-    # THE FINAL FIX
-    # ---------------------------------------------------------
-    # 1. We still try to disable the cache.
-    "statement_cache_size": 0,
-    
-    # 2. SECURITY NET: If cache disable fails (which it is doing),
-    # we force every statement to have a unique random name.
-    # This prevents "prepared statement already exists" errors 
-    # when Supabase reuses connections.
-    "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
-    # ---------------------------------------------------------
-    
-    "server_settings": {
-        "jit": "off"
-    }
+    "ssl": make_ssl(),
+    "statement_cache_size": 0,           # disable prepared statements
+    "prepared_statement_name_func": None # prevent SQLAlchemy from naming statements
 }
 
-print(f"🔄 Configuring Database")
+print("🔄 Configuring Database (Pooler Mode)")
 
+
+# ----------------------------------------------------
+# Engine (NO POOLING → Supabase pooler handles it)
+# ----------------------------------------------------
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
     connect_args=connect_args,
-    pool_pre_ping=True 
+    pool_pre_ping=True,
+    poolclass=NullPool,       # required for Pooler
 )
 
+
+# ----------------------------------------------------
+# Sessions
+# ----------------------------------------------------
 AsyncSessionLocal = async_sessionmaker(
-    engine, expire_on_commit=False, class_=AsyncSession
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False
 )
 
-# 4. Dependencies
-from app.models.department import Department
-from app.models.user import User
-from app.models.student import Student
-from app.models.application import Application
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
 
-# Deprecated for Transaction Mode (Do not use)
-async def init_db() -> None:
+
+# ----------------------------------------------------
+# Create tables
+# ----------------------------------------------------
+async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
 
-async def test_connection() -> None:
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-            print("✅ Successfully connected to database (Transaction Mode).")
-    except Exception as e:
-        print("❌ Database connection failed:")
-        print(f" → {e}")
+
+# ----------------------------------------------------
+# Test Connection (SAFE)
+# ----------------------------------------------------
+async def test_connection():
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+        print("✅ DB Connection OK (Pooler)")

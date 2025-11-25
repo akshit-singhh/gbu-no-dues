@@ -41,6 +41,7 @@ class ApplicationRead(BaseModel):
     student_id: UUID
     office_verifier_id: Optional[UUID]
     status: str
+    current_department_id: Optional[int]
     remarks: Optional[str]
     created_at: datetime
     updated_at: datetime

@@ -1,11 +1,15 @@
 # app/main.py
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
 from app.core.database import test_connection, init_db, AsyncSessionLocal
 from app.core.config import settings
 from app.services.auth_service import get_user_by_email, create_user
 from app.models.user import UserRole
-
+from app.models.department import Department
 # Routers
 from app.api.endpoints import auth as auth_router
 from app.api.endpoints import users as users_router
@@ -24,6 +28,35 @@ app = FastAPI(
     version="1.0.0",
     description="Backend service for the GBU No Dues Management System.",
 )
+
+# ------------------------------------------------------------
+# STATIC FILES + FAVICON (ADD THIS BLOCK)
+# ------------------------------------------------------------
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse("app/static/favicon.ico")
+
+# ------------------------------------------------------------
+# CORS (Leapcell-compatible)
+# ------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "https://gbu-no-dues-management-frontend.yourdomain.com",
+        "*"
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "*"],
+)
+
+# Allow all OPTIONS preflight routes (required for Leapcell)
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str):
+    return {}
 
 # ------------------------------------------------------------
 # REGISTER ROUTERS

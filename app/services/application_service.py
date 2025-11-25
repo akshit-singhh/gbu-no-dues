@@ -4,7 +4,6 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 import uuid
-from typing import Dict, Any, Optional
 
 from app.models.application import Application
 from app.models.student import Student
@@ -29,6 +28,8 @@ ALLOWED_STUDENT_UPDATE_FIELDS = {
     "admission_type",
 }
 
+VALID_CATEGORIES = {"GEN", "OBC", "SC", "ST"}
+
 
 async def create_application_for_student(
     session: AsyncSession,
@@ -36,57 +37,89 @@ async def create_application_for_student(
     payload: dict
 ):
 
-    # 1. Fetch student
+    # ---------------------------------------
+    # 1️ Fetch student
+    # ---------------------------------------
     result = await session.execute(select(Student).where(Student.id == student_id))
     student = result.scalar_one_or_none()
     if not student:
         raise ValueError("Student not found")
 
-    # 2. Check existing application
+    # ---------------------------------------
+    # 2️ Check existing application
+    # ---------------------------------------
     existing_app_q = await session.execute(
         select(Application).where(Application.student_id == student.id)
     )
     existing_app = existing_app_q.scalar_one_or_none()
 
     if existing_app:
+
+        # Active applications cannot create again
         if existing_app.status in ["Pending", "InProgress"]:
-            # Student already has an active application – can't create new
             raise ValueError("You already have an active application.")
 
+        # Already completed → no reapply
         if existing_app.status == "Completed":
-            raise ValueError("Your application is already completed. No more submissions allowed.")
+            raise ValueError("Your application is already completed.")
 
+        # Rejected → resubmission logic
         if existing_app.status == "Rejected":
-            # Resubmission process (do NOT create new application)
             await session.execute(
                 "SELECT fn_resubmit_application(:app_id)",
                 {"app_id": str(existing_app.id)}
             )
             await session.commit()
+            return existing_app  # updated application returned
 
-            return existing_app  # return the updated existing application
-
-    # 3. Update student (allowed editable fields)
+    # ---------------------------------------
+    # 3️ Update student fields safely
+    # ---------------------------------------
     student_update = payload.get("student_update") or {}
+
     for field, value in student_update.items():
+
+        if field not in ALLOWED_STUDENT_UPDATE_FIELDS:
+            continue  # ignore fields not allowed
+
+        # Normalize category
+        if field == "category" and value:
+            value = value.upper()  # gen → GEN
+            if value not in VALID_CATEGORIES:
+                raise ValueError(
+                    f"Invalid category '{value}'. Allowed: {list(VALID_CATEGORIES)}"
+                )
+
+        # Normalize gender
+        if field == "gender" and value:
+            value = value.capitalize()  # male → Male
+
         if hasattr(student, field):
             setattr(student, field, value)
 
     session.add(student)
 
-    # 4. Create new application (only if none exists)
+    # ---------------------------------------
+    # 4️⃣ Create new application
+    # ---------------------------------------
     app = Application(
         id=uuid.uuid4(),
         student_id=student.id,
         status="Pending",
-        remarks=payload.get("remarks") if payload.get("remarks") else None
+        remarks=payload.get("remarks") or None
     )
+
     session.add(app)
 
+    # ---------------------------------------
+    # 5️⃣ Commit transaction
+    # ---------------------------------------
     try:
         await session.commit()
         await session.refresh(app)
         return app
-    except IntegrityError:
+
+    except IntegrityError as e:
         await session.rollback()
+        print("IntegrityError while creating application:", e)
         raise ValueError("Failed to create application")

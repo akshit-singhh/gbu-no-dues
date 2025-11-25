@@ -1,12 +1,13 @@
 from pydantic import BaseModel
-from typing import Optional
 from uuid import UUID
+from typing import Optional
 
 class StageActionRequest(BaseModel):
     remarks: Optional[str] = None
 
+
 class StageActionResponse(BaseModel):
-    stage_id: UUID
+    id: UUID
     application_id: UUID
     department_id: int
     status: str
@@ -15,3 +16,4 @@ class StageActionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "ignore"

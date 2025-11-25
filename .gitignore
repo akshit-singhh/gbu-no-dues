@@ -53,3 +53,7 @@ Thumbs.db
 
 # SSL certificates
 certs/
+
+#testing server
+run_server.py
+pagekite.py
