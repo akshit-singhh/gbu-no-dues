@@ -21,7 +21,7 @@ router = APIRouter(
 # 1️⃣ List pending applications (Admin can see everything too)
 @router.get("/applications/pending")
 async def get_pending(
-    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Office)),
+    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Staff)),
     session: AsyncSession = Depends(get_db_session)
 ):
     dept_id = current_user.department_id
@@ -37,7 +37,7 @@ async def get_pending(
 async def approve_stage_endpoint(
     stage_id: str,
     remarks: str | None = None,
-    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Office)),
+    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Staff)),
     session: AsyncSession = Depends(get_db_session)
 ):
     stage = await get_stage(session, stage_id)
@@ -55,7 +55,7 @@ async def approve_stage_endpoint(
 async def reject_stage_endpoint(
     stage_id: str,
     remarks: str | None = None,
-    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Office)),
+    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Staff)),
     session: AsyncSession = Depends(get_db_session)
 ):
     stage = await get_stage(session, stage_id)

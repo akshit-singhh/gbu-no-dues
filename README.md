@@ -1,5 +1,6 @@
 # gbu-no-dues-management-backend
 
+
 ```
 gbu-no-dues-management-backend
 ├─ app
@@ -20,6 +21,7 @@ gbu-no-dues-management-backend
 │  ├─ core
 │  │  ├─ config.py
 │  │  ├─ database.py
+│  │  ├─ department_roles.py
 │  │  ├─ rbac.py
 │  │  ├─ security.py
 │  │  └─ __init__.py
@@ -29,6 +31,7 @@ gbu-no-dues-management-backend
 │  │  ├─ application_history.py
 │  │  ├─ application_stage.py
 │  │  ├─ department.py
+│  │  ├─ enums.py
 │  │  ├─ school.py
 │  │  ├─ student.py
 │  │  ├─ user.py
@@ -36,6 +39,7 @@ gbu-no-dues-management-backend
 │  ├─ schemas
 │  │  ├─ application.py
 │  │  ├─ approval.py
+│  │  ├─ approval_summary.py
 │  │  ├─ auth.py
 │  │  ├─ auth_student.py
 │  │  ├─ student.py

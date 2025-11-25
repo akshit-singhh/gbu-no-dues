@@ -100,6 +100,5 @@ def role_required(*allowed_roles: UserRole):
 
 require_super_admin = role_required(UserRole.Admin)
 require_hod = role_required(UserRole.HOD)
-require_office = role_required(UserRole.Office)
-require_cell_member = role_required(UserRole.CellMember)
+require_staff = role_required(UserRole.Staff)
 require_student = role_required(UserRole.Student)

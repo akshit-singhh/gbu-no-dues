@@ -27,18 +27,22 @@ async def create_application(
     current_user: User = Depends(AllowRoles(UserRole.Student)),
     session: AsyncSession = Depends(get_db_session),
 ):
-
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student profile linked to user")
 
-    student_id = str(current_user.student_id)
+    student_id = current_user.student_id  # UUID object — GOOD
 
-    # Check for active application
+    # Must use ENUM not strings
+    from app.models.enums import OverallApplicationStatus
+
     result = await session.execute(
         select(Application)
         .where(
             (Application.student_id == student_id) &
-            (Application.status.in_(["Pending", "InProgress"]))
+            (Application.status.in_([
+                OverallApplicationStatus.Pending,
+                OverallApplicationStatus.InProgress
+            ]))
         )
     )
     existing_app = result.scalars().first()
@@ -46,19 +50,17 @@ async def create_application(
     if existing_app:
         raise HTTPException(
             status_code=400,
-            detail="You already have an active application. You cannot submit another one."
+            detail="You already have an active application."
         )
 
-    try:
-        new_app = await create_application_for_student(
-            session,
-            student_id,
-            payload.dict(exclude_none=True)
-        )
-        return ApplicationRead.from_orm(new_app)
+    new_app = await create_application_for_student(
+        session,
+        student_id,
+        payload.dict(exclude_none=True)
+    )
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return ApplicationRead.from_orm(new_app)
+
 
 
 # ------------------------------------------------------------

@@ -3,9 +3,13 @@
 from sqlmodel import SQLModel, Field, Column
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy import Integer, Text, DateTime, ForeignKey
+from sqlalchemy import Enum as PGEnum  # <-- REQUIRED
 from datetime import datetime
 import uuid
 from typing import Optional
+
+from app.models.enums import OverallApplicationStatus
+
 
 class Application(SQLModel, table=True):
     __tablename__ = "applications"
@@ -24,10 +28,10 @@ class Application(SQLModel, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     )
 
-    # 🔥 IMPORTANT PART: Ensure this is TEXT not ENUM
-    status: str = Field(
-        default="Pending",
-        sa_column=Column(Text, nullable=False)
+    # ✔️ FIX: Use Postgres ENUM, not TEXT
+    status: OverallApplicationStatus = Field(
+        default=OverallApplicationStatus.Pending,
+        sa_column=Column(PGEnum(OverallApplicationStatus, name="overall_application_status"), nullable=False)
     )
 
     current_department_id: Optional[int] = Field(

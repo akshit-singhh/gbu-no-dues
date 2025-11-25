@@ -23,14 +23,10 @@ from app.services.auth_service import (
     delete_user_by_id,
     update_user
 )
-from app.services.student_service import (
-    get_student_by_id,
-    list_students
-)
+from app.services.student_service import get_student_by_id, list_students
 
 # Deps
 from app.api.deps import get_db_session, get_current_user, require_super_admin
-
 
 router = APIRouter(prefix="/api/admin", tags=["Auth (Super Admin)"])
 
@@ -48,11 +44,11 @@ async def login(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    return create_login_response(user)
+    return await create_login_response(user, session)
 
 
 # -------------------------------------------------------------------
-# REGISTER SUPER ADMIN  (Only existing Admin can do this)
+# REGISTER SUPER ADMIN
 # -------------------------------------------------------------------
 @router.post("/register-super-admin", response_model=UserRead)
 async def register_super_admin(
@@ -61,25 +57,25 @@ async def register_super_admin(
     _: User = Depends(require_super_admin),
 ):
     if data.role != UserRole.Admin:
-        raise HTTPException(400, detail="This endpoint can only create Admin accounts.")
+        raise HTTPException(400, detail="This endpoint only creates Admin accounts.")
 
-    # Check duplicate
     existing = await get_user_by_email(session, data.email)
     if existing:
-        raise HTTPException(400, "Email already exists")
+        raise HTTPException(400, detail="Email already exists")
 
     user = await create_user(
         session=session,
         name=data.name,
         email=data.email,
         password=data.password,
-        role=UserRole.Admin
+        role=UserRole.Admin,
+        department_id=None
     )
     return user
 
 
 # -------------------------------------------------------------------
-# REGISTER ANY USER (Except Admin)
+# REGISTER NORMAL USER (HOD / Staff)
 # -------------------------------------------------------------------
 @router.post("/register-user", response_model=UserRead)
 async def register_user(
@@ -87,28 +83,37 @@ async def register_user(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_super_admin),
 ):
-    # Admin cannot use this endpoint
+    # BLOCK ADMIN
     if data.role == UserRole.Admin:
-        raise HTTPException(400, detail="Use /register-super-admin to create admin accounts.")
+        raise HTTPException(400, detail="Use /register-super-admin for Admin accounts.")
 
-    # Validate existing email
+    # VALIDATE EMAIL
     existing = await get_user_by_email(session, data.email)
     if existing:
-        raise HTTPException(400, "Email already exists")
+        raise HTTPException(400, detail="Email already exists")
 
-    # Create user
+    # Staff must have a department_id
+    if data.role == UserRole.Staff:
+        if not data.department_id:
+            raise HTTPException(400, detail="department_id is required for Staff users")
+
+    # HOD also must have department assignment (optional for now)
+    if data.role == UserRole.HOD and not data.department_id:
+        raise HTTPException(400, detail="HOD must belong to a department")
+
     user = await create_user(
         session=session,
         name=data.name,
         email=data.email,
         password=data.password,
-        role=data.role
+        role=data.role,
+        department_id=data.department_id,
     )
     return user
 
 
 # -------------------------------------------------------------------
-# LIST ALL USERS (Admin Only)
+# LIST ALL USERS
 # -------------------------------------------------------------------
 @router.get("/users", response_model=List[UserRead])
 async def get_all_users(
@@ -145,6 +150,10 @@ async def update_user_endpoint(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_super_admin),
 ):
+    # Staff must always have department
+    if data.role == UserRole.Staff and not data.department_id:
+        raise HTTPException(400, detail="department_id is required for Staff users")
+
     try:
         return await update_user(
             session,
@@ -159,7 +168,7 @@ async def update_user_endpoint(
 
 
 # -------------------------------------------------------------------
-# ME (Get current admin)
+# GET CURRENT ADMIN
 # -------------------------------------------------------------------
 @router.get("/me", response_model=UserRead)
 async def me(current_user: User = Depends(get_current_user)):
@@ -167,7 +176,7 @@ async def me(current_user: User = Depends(get_current_user)):
 
 
 # -------------------------------------------------------------------
-# GET STUDENT BY ID (Admin Only)
+# GET STUDENT BY ID
 # -------------------------------------------------------------------
 @router.get("/students/{student_id}", response_model=StudentRead)
 async def admin_get_student_by_id(
@@ -182,7 +191,7 @@ async def admin_get_student_by_id(
 
 
 # -------------------------------------------------------------------
-# LIST ALL STUDENTS (Admin Only)
+# LIST ALL STUDENTS
 # -------------------------------------------------------------------
 @router.get("/students", response_model=List[StudentRead])
 async def admin_list_students(

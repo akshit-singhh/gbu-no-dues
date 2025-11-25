@@ -1,20 +1,10 @@
-# app/schemas/auth.py
-
-from pydantic import BaseModel, EmailStr
-from typing import Optional
-
-from sqlmodel import UUID
-from app.models.user import UserRole
-from app.schemas.student import StudentRead
-from app.schemas.user import UserRead
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from uuid import UUID
 
 from app.models.user import UserRole
 from app.schemas.user import UserRead
-
-
+from app.schemas.student import StudentRead
 
 
 # -------------------------------------------------------------------
@@ -26,13 +16,42 @@ class LoginRequest(BaseModel):
 
 
 # -------------------------------------------------------------------
-# REGISTER REQUEST (Super Admin creates any user)
+# REGISTER REQUEST  
+# (Admin creates: HOD / Staff / Student)
 # -------------------------------------------------------------------
 class RegisterRequest(BaseModel):
     name: str
     email: EmailStr
     password: str
-    role: UserRole   # must match backend enum
+    role: UserRole                  # Admin / HOD / Staff / Student
+    department_id: Optional[int] = None   # REQUIRED for Staff & HOD
+
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "name": "Staff User",
+                    "email": "staff@example.com",
+                    "password": "password123",
+                    "role": "Staff",
+                    "department_id": 3
+                },
+                {
+                    "name": "HOD User",
+                    "email": "hod@example.com",
+                    "password": "password123",
+                    "role": "HOD",
+                    "department_id": 1
+                },
+                {
+                    "name": "Student User",
+                    "email": "student@example.com",
+                    "password": "password123",
+                    "role": "Student"
+                    # Student does NOT need department_id
+                }
+            ]
+        }
 
 
 # -------------------------------------------------------------------
@@ -41,7 +60,7 @@ class RegisterRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    expires_in: Optional[int] = None  # Optional but clean API design
+    expires_in: Optional[int] = None
 
 
 # -------------------------------------------------------------------
@@ -53,13 +72,21 @@ class TokenWithUser(BaseModel):
     expires_in: Optional[int] = None
     user: UserRead
 
+    # attach department name explicitly
+    department_name: Optional[str] = None
 
+
+# -------------------------------------------------------------------
 # STUDENT LOGIN REQUEST
+# -------------------------------------------------------------------
 class StudentLoginRequest(BaseModel):
-    identifier: str      # enrollment OR roll number
+    identifier: str
     password: str
 
+
+# -------------------------------------------------------------------
 # STUDENT LOGIN RESPONSE
+# -------------------------------------------------------------------
 class StudentLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

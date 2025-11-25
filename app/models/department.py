@@ -1,20 +1,22 @@
-# app/models/department.py
-
-from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import Integer, String
+from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, Integer, String
+from typing import Optional
 
 
 class Department(SQLModel, table=True):
     __tablename__ = "departments"
 
-    id: int = Field(
+    # Primary Key must be ONLY inside sa_column
+    id: Optional[int] = Field(
+        default=None,
         sa_column=Column(Integer, primary_key=True, autoincrement=True)
     )
 
     name: str = Field(
-        sa_column=Column(String, unique=True, nullable=False)
+        sa_column=Column(String(128), nullable=False, unique=True)
     )
 
-    sequence_order: int = Field(
-        sa_column=Column(Integer, unique=True, nullable=False)
+    sequence_order: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True)
     )
