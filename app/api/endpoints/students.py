@@ -1,6 +1,6 @@
 # app/api/endpoints/students.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db_session
@@ -14,7 +14,7 @@ from app.services.student_service import (
     list_students,
 )
 from app.services.auth_service import authenticate_student
-
+from app.services.email_service import send_welcome_email
 
 router = APIRouter(
     prefix="/api/students",
@@ -23,7 +23,7 @@ router = APIRouter(
 
 
 # ------------------------------------------------------------
-# STUDENT LOGIN  (kept inside students router)
+# STUDENT LOGIN
 # ------------------------------------------------------------
 @router.post("/login", response_model=StudentLoginResponse)
 async def student_login(
@@ -31,7 +31,6 @@ async def student_login(
     session: AsyncSession = Depends(get_db_session)
 ):
     auth = await authenticate_student(session, data.identifier, data.password)
-
 
     if not auth:
         raise HTTPException(status_code=401, detail="Invalid Enrollment/Roll Number or password")
@@ -45,6 +44,7 @@ async def student_login(
 @router.post("/register", response_model=StudentRead, status_code=status.HTTP_201_CREATED)
 async def register_student(
     data: StudentRegister,
+    background_tasks: BackgroundTasks,  # <-- Add this parameter
     session: AsyncSession = Depends(get_db_session),
 ):
 
@@ -52,7 +52,23 @@ async def register_student(
         raise HTTPException(status_code=400, detail="Passwords do not match")
 
     try:
+        # Create student in DB
         student = await register_student_and_user(session, data)
+        
+        # Prepare data for email
+        # We convert to a dict explicitly to pass to the background task
+        # so it doesn't rely on the DB session (which will close)
+        email_data = {
+            "full_name": student.full_name,
+            "enrollment_number": student.enrollment_number,
+            "roll_number": student.roll_number,
+            "email": student.email
+        }
+        
+        # Queue the email task
+        # This will run AFTER the return statement sends the 201 response
+        background_tasks.add_task(send_welcome_email, email_data)
+
         return StudentRead.from_orm(student)
 
     except ValueError as e:
