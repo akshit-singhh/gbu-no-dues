@@ -1,6 +1,5 @@
-# app/api/endpoints/approvals.py
-
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, text
 
@@ -69,13 +68,30 @@ async def list_all_applications(
     # STAFF / HOD → only their department
     else:
         if not current_user.department_id:
-            return []
+            # Handle case where user has no department linked
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "No applications found (User has no department assigned).",
+                    "data": []
+                }
+            )
         query = query.where(
             Application.current_department_id == current_user.department_id
         )
 
     result = await session.execute(query)
     apps = result.scalars().all()
+
+    # --- UPDATED: Return message if empty ---
+    if not apps:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "No applications found.",
+                "data": []
+            }
+        )
 
     final_list = []
 
@@ -156,12 +172,30 @@ async def list_enriched(
 
     else:
         if not current_user.department_id:
-            return []
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "No applications found.",
+                    "data": []
+                }
+            )
         query = base_query + " WHERE a.current_department_id = :dept ORDER BY a.created_at DESC"
         params = {"dept": current_user.department_id}
 
     result = await session.execute(text(query), params)
-    return result.mappings().all()
+    data = result.mappings().all()
+
+    # --- UPDATED: Return message if empty ---
+    if not data:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "No applications found.",
+                "data": []
+            }
+        )
+
+    return data
 
 
 # ===================================================================

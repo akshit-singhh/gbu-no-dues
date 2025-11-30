@@ -18,7 +18,7 @@ router = APIRouter(
     tags=["Department Processing"]
 )
 
-# 1️⃣ List pending applications (Admin can see everything too)
+# 1️ List pending applications (Admin can see everything too)
 @router.get("/applications/pending")
 async def get_pending(
     current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.HOD, UserRole.Staff)),
@@ -32,7 +32,7 @@ async def get_pending(
     return stages
 
 
-# 2️⃣ Approve stage
+# 2️ Approve stage
 @router.post("/applications/{stage_id}/approve")
 async def approve_stage_endpoint(
     stage_id: str,
@@ -50,7 +50,7 @@ async def approve_stage_endpoint(
     return await approve_stage(session, stage, current_user.id, remarks)
 
 
-# 3️⃣ Reject stage
+# 3️ Reject stage
 @router.post("/applications/{stage_id}/reject")
 async def reject_stage_endpoint(
     stage_id: str,

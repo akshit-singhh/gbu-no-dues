@@ -14,8 +14,9 @@ def get_template(template_name):
 
 # Helper to send email via SMTP
 def send_email_via_smtp(to_email, subject, html_content):
-    if not settings.SMTP_HOST or not settings.SMTP_USER:
-        print("⚠️ SMTP settings not configured. Skipping email.")
+    # CHANGED: Only require HOST. User/Pass are now optional (for Mailpit)
+    if not settings.SMTP_HOST:
+        print("⚠️ SMTP Host not configured. Skipping email.")
         return
 
     try:
@@ -29,11 +30,17 @@ def send_email_via_smtp(to_email, subject, html_content):
         
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
             server.ehlo()
+            
+            # Logic: Use TLS only if it's a production-like port (587/2525)
+            # Mailpit runs on 1025 and usually doesn't need TLS locally
             if settings.SMTP_PORT in [587, 2525]:
                 server.starttls()
                 server.ehlo()
             
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            # CHANGED: Only login if credentials are provided in .env
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            
             server.sendmail(settings.EMAILS_FROM_EMAIL, to_email, msg.as_string())
 
         print(f"✅ Email sent successfully to {to_email}")
@@ -64,9 +71,6 @@ def send_welcome_email(student_data: dict):
 # 2. REJECTION EMAIL
 # ---------------------------------------------------------
 def send_application_rejected_email(data: dict):
-    """
-    data requires: name, email, department_name, remarks, login_url
-    """
     try:
         template = get_template('application_rejected.html')
         context = {
@@ -86,13 +90,12 @@ def send_application_rejected_email(data: dict):
 # 3. APPROVAL / COMPLETION EMAIL
 # ---------------------------------------------------------
 def send_application_approved_email(data: dict):
-    """
-    data requires: name, email, application_id
-    """
     try:
         template = get_template('application_approved.html')
         context = {
             "name": data.get("name"),
+            "roll_number": data.get("roll_number"),
+            "enrollment_number": data.get("enrollment_number"),
             "application_id": str(data.get("application_id")),
             "completion_date": datetime.now().strftime("%d-%m-%Y"),
             "certificate_url": f"{settings.FRONTEND_URL}/certificate/download/{data.get('application_id')}" 
@@ -101,3 +104,23 @@ def send_application_approved_email(data: dict):
         send_email_via_smtp(data.get("email"), "🎉 No Dues Application Approved", html_content)
     except Exception as e:
         print(f"Error preparing approval email: {e}")
+        
+# ---------------------------------------------------------
+# 4. APPLICATION SUBMITTED EMAIL (NEW)
+# ---------------------------------------------------------
+def send_application_created_email(data: dict):
+    """
+    data requires: name, email, application_id
+    """
+    try:
+        template = get_template('application_created.html')
+        context = {
+            "name": data.get("name"),
+            "application_id": str(data.get("application_id")),
+            "submission_date": datetime.now().strftime("%d-%m-%Y %I:%M %p"),
+            "track_url": f"{settings.FRONTEND_URL}/dashboard"  # Redirect to dashboard to see status
+        }
+        html_content = template.render(context)
+        send_email_via_smtp(data.get("email"), "Application Submitted Successfully - GBU No Dues", html_content)
+    except Exception as e:
+        print(f"Error preparing submission email: {e}")

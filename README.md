@@ -51,6 +51,7 @@ gbu-no-dues-management-backend
 │  │  ├─ audit_service.py
 │  │  ├─ auth_service.py
 │  │  ├─ department_service.py
+│  │  ├─ email_service.py
 │  │  ├─ notification_service.py
 │  │  ├─ pdf_service.py
 │  │  ├─ sheets_service.py
@@ -59,13 +60,15 @@ gbu-no-dues-management-backend
 │  │  ├─ workflow_service.py
 │  │  └─ __init__.py
 │  ├─ static
-│  │  └─ favicon.ico
+│  │  ├─ favicon.ico
+│  │  └─ status.html
 │  ├─ templates
 │  │  ├─ email
 │  │  │  ├─ application_approved.html
 │  │  │  ├─ application_completed.html
 │  │  │  ├─ application_created.html
-│  │  │  └─ application_rejected.html
+│  │  │  ├─ application_rejected.html
+│  │  │  └─ student_welcome.html
 │  │  └─ pdf
 │  │     └─ certificate_template.html
 │  └─ __init__.py
@@ -76,11 +79,15 @@ gbu-no-dues-management-backend
 ├─ requirements.txt
 └─ tests
    ├─ conftest.py
+   ├─ test_account.py
    ├─ test_applications.py
    ├─ test_approvals.py
+   ├─ test_approvals_workflow.py
    ├─ test_auth.py
    ├─ test_auth_student.py
    ├─ test_departments.py
+   ├─ test_email_mock.py
+   ├─ test_metrics.py
    ├─ test_students.py
    ├─ test_student_registration.py
    ├─ test_users.py

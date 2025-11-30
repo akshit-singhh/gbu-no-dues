@@ -1,6 +1,4 @@
-# app/api/endpoints/applications.py
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -11,6 +9,10 @@ from app.models.application import Application
 from app.models.application_stage import ApplicationStage
 from app.schemas.application import ApplicationCreate, ApplicationRead
 from app.services.application_service import create_application_for_student
+from app.services.email_service import send_application_created_email
+
+# We need the Enum for the pre-check (optional, but good for consistency)
+from app.models.enums import OverallApplicationStatus
 
 router = APIRouter(
     prefix="/api/applications",
@@ -24,17 +26,17 @@ router = APIRouter(
 @router.post("/create", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
 async def create_application(
     payload: ApplicationCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(AllowRoles(UserRole.Student)),
     session: AsyncSession = Depends(get_db_session),
 ):
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student profile linked to user")
 
-    student_id = current_user.student_id  # UUID object — GOOD
+    student_id = str(current_user.student_id) # Ensure it's a string for the service
 
-    # Must use ENUM not strings
-    from app.models.enums import OverallApplicationStatus
-
+    # Optional: Fast-fail check at endpoint level
+    # (The service also checks this, but this saves a service call if obvious)
     result = await session.execute(
         select(Application)
         .where(
@@ -53,14 +55,37 @@ async def create_application(
             detail="You already have an active application."
         )
 
-    new_app = await create_application_for_student(
-        session,
-        student_id,
-        payload.dict(exclude_none=True)
-    )
+    # Call Service Layer with Error Handling
+    try:
+        new_app = await create_application_for_student(
+            session=session,
+            student_id=student_id,
+            payload=payload.dict(exclude_none=True)
+        )
+    except ValueError as e:
+        # This catches "Already completed", "Student not found", etc.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        # Log the actual error for debugging (print or logger)
+        print(f"CRITICAL ERROR creating application: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An internal error occurred while creating the application."
+        )
+
+    # Send Email Notification via Background Task
+    if current_user.email:
+        email_data = {
+            "name": current_user.name,
+            "email": current_user.email,
+            "application_id": str(new_app.id)
+        }
+        background_tasks.add_task(send_application_created_email, email_data)
 
     return ApplicationRead.from_orm(new_app)
-
 
 
 # ------------------------------------------------------------

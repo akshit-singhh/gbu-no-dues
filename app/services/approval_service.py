@@ -8,7 +8,7 @@ from uuid import UUID
 from app.models.application import Application
 from app.models.application_stage import ApplicationStage
 from app.models.user import User, UserRole
-from app.models.enums import OverallApplicationStatus  # <--- IMPORT ENUM
+from app.models.enums import OverallApplicationStatus
 
 async def _update_application_status(session: AsyncSession, application_id: UUID):
     """Recalculate global application status based on stages."""
@@ -22,12 +22,13 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
     if not stages:
         return
 
-    # Logic to determine global status using ENUMS
-    if any(s.status == "Rejected" for s in stages):
+    # FIX: Cast status to string to handle both Enum objects and Strings safely
+    # This prevents 'InProgress' errors when 'Completed' was expected
+    if any(str(s.status) == "Rejected" for s in stages):
         new_status = OverallApplicationStatus.Rejected
-    elif all(s.status == "Approved" for s in stages):
+    elif all(str(s.status) == "Approved" for s in stages):
         new_status = OverallApplicationStatus.Completed
-    elif any(s.status == "Approved" for s in stages):
+    elif any(str(s.status) == "Approved" for s in stages):
         new_status = OverallApplicationStatus.InProgress
     else:
         new_status = OverallApplicationStatus.Pending
@@ -39,7 +40,6 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
     app = app_res.scalar_one()
 
     # Only update if status changed or just to refresh timestamp
-    # We assign the Enum Member, not a string
     app.status = new_status
     app.updated_at = datetime.utcnow()
     
@@ -92,11 +92,11 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     stage.status = "Approved"
     stage.reviewer_id = reviewer.id
     stage.reviewed_at = datetime.utcnow()
-    stage.remarks = "Approved via Portal" # Optional default remark
+    stage.remarks = "Approved via Portal"
     
     session.add(stage)
 
-    # 🔥 CRITICAL FIX: Flush changes so the next query sees 'Approved'
+    # 🔥 Flush changes so _update_application_status sees the new 'Approved' state
     await session.flush()
 
     # 6. Recalculate Application Status
@@ -106,13 +106,11 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
 
 
 async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remarks: str):
-    # 1. Convert string to UUID
     if isinstance(stage_id, str):
         stage_uuid = UUID(stage_id)
     else:
         stage_uuid = stage_id
 
-    # 2. Fetch Stage
     result = await session.execute(
         select(ApplicationStage).where(ApplicationStage.id == stage_uuid)
     )
@@ -136,7 +134,6 @@ async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remark
         if application.current_department_id != reviewer.department_id:
             raise ValueError("Reviewer not allowed to reject this application")
 
-    # 3. Apply Updates
     stage.status = "Rejected"
     stage.remarks = remarks
     stage.reviewer_id = reviewer.id
@@ -144,7 +141,6 @@ async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remark
     
     session.add(stage)
 
-    # 🔥 CRITICAL FIX: Flush here too
     await session.flush()
 
     await _update_application_status(session, stage.application_id)

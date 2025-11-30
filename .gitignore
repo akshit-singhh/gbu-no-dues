@@ -57,3 +57,4 @@ certs/
 #testing server
 run_server.py
 pagekite.py
+run_mailpit.py
