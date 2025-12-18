@@ -1,251 +1,316 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>No Dues Certificate - GBU</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap');
-        
-        body {
-            font-family: 'Noto Sans', sans-serif;
-            -webkit-print-color-adjust: exact;
-        }
+<meta charset="UTF-8">
+<title>No Dues Certificate</title>
 
-        /* Input styling to look like plain text when printed */
-        input, textarea {
-            background: transparent;
-            border: none;
-            width: 100%;
-            outline: none;
-            font-family: inherit;
-            font-size: inherit;
-        }
+<style>
+/* =================== PDF SETTINGS =================== */
+@page {
+    size: A4;
+    margin: 12mm 15mm;
+}
+body {
+    font-family: "Helvetica", "Arial", sans-serif;
+    font-size: 11px;
+    color: #1e293b;
+    margin: 0;
+    background: #ffffff;
+}
 
-        /* Print Specifics for A4 */
-        @media print {
-            @page {
-                size: A4;
-                margin: 10mm; /* Standard print margin */
-            }
-            
-            body {
-                print-color-adjust: exact;
-                background-color: white;
-                margin: 0;
-                padding: 0;
-                min-height: auto;
-            }
+/* =================== HEADER =================== */
+.header {
+    text-align: center;
+    margin-bottom: 18px;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 10px;
+}
+.header img {
+    height: 65px;
+    margin-bottom: 5px;
+}
+.university-name {
+    font-size: 22px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #0f172a;
+    letter-spacing: 1px;
+}
+.university-sub {
+    font-size: 11px;
+    color: #64748b;
+}
+.doc-title {
+    margin-top: 8px;
+    display: inline-block;
+    padding: 6px 22px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    border-radius: 20px;
+    background: #e0f2fe;
+    color: #0369a1;
+    border: 1px solid #bae6fd;
+    letter-spacing: .8px;
+}
 
-            .no-print {
-                display: none !important;
-            }
+/* =================== SECTION TITLES =================== */
+.section-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #334155;
+    border-bottom: 1px solid #cbd5e1;
+    padding-bottom: 4px;
+    margin-top: 18px;
+    margin-bottom: 12px;
+    letter-spacing: .6px;
+}
 
-            .page-container {
-                box-shadow: none !important;
-                margin: 0 !important;
-                width: 100% !important;
-                max-width: none !important;
-                padding: 0 !important; /* Remove screen padding, rely on @page margin */
-                border: none !important;
-            }
+/* =================== PROFILE TABLE =================== */
+.profile-table { width: 100%; border-collapse: collapse; }
+.profile-table td { width: 50%; padding: 5px 12px 5px 0; }
 
-            /* Ensure inputs don't show placeholder text on paper */
-            input::placeholder, textarea::placeholder {
-                color: transparent;
-            }
-            
-            /* ensure text areas don't have scrollbars or resize handles in print */
-            textarea {
-                resize: none;
-                overflow: hidden;
-            }
-        }
-    </style>
+.label {
+    font-size: 9px;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: #64748b;
+    margin-bottom: 1px;
+}
+.value {
+    font-size: 11px;
+    font-weight: 600;
+    color: #0f172a;
+}
+.field-box {
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 3px;
+}
+
+/* =================== CLEARANCE TABLE =================== */
+.clearance-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.clearance-table th {
+    background: #f1f5f9;
+    color: #475569;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 8px 10px;
+    border-bottom: 1px solid #cbd5e1;
+    font-size: 9px;
+}
+.clearance-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #e2e8f0;
+    color: #334155;
+}
+.clearance-table tr:nth-child(even) { background: #fafafa; }
+
+/* Status Badges */
+.status-badge {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    min-width: 60px;
+    display: inline-block;
+    text-align: center;
+}
+.status-approved {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+.status-pending {
+    background: #fef9c3;
+    color: #854d0e;
+    border: 1px solid #fde047;
+}
+
+/* =================== SUMMARY BOX =================== */
+.summary-box {
+    margin-top: 18px;
+    background: #f8fafc;
+    padding: 14px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    display: table;
+    width: 100%;
+}
+.summary-left { display: table-cell; width: 70%; vertical-align: top; }
+.summary-right { display: table-cell; width: 30%; text-align: center; }
+
+.certificate-id {
+    font-family: "Courier New", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+}
+.final-status {
+    margin-top: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #166534;
+}
+
+/* QR */
+.qr-frame {
+    background: #fff;
+    padding: 5px;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    display: inline-block;
+}
+.qr-note {
+    margin-top: 4px;
+    font-size: 8px;
+    color: #475569;
+}
+
+/* =================== FOOTER =================== */
+.footer-note {
+    margin-top: 15px;
+    text-align: center;
+    font-size: 8px;
+    color: #94a3b8;
+    border-top: 1px dashed #e2e8f0;
+    padding-top: 8px;
+}
+</style>
 </head>
-<body class="bg-gray-100 min-h-screen p-4 md:p-8 flex flex-col items-center">
 
-    <!-- Print/Action Bar (Hidden in Print) -->
-    <div class="no-print mb-6 w-full max-w-[210mm] flex justify-between items-center">
-        <button onclick="window.print()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded shadow flex items-center gap-2 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                <path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1"/>
-                <path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1"/>
-            </svg>
-            Print Form
-        </button>
+<body>
+
+<!-- =================== HEADER =================== -->
+<div class="header">
+    <img src="https://www.gbu.ac.in/Content/img/logo_gbu.png">
+    <div class="university-name">Gautam Buddha University</div>
+    <div class="university-sub">Greater Noida, Uttar Pradesh, India</div>
+    <div class="doc-title">No Dues Certificate</div>
+</div>
+
+<!-- =================== STUDENT PROFILE =================== -->
+<div class="section-title">Student Profile</div>
+<table class="profile-table">
+    <tr>
+        <td>
+            <div class="field-box">
+                <span class="label">Full Name</span>
+                <span class="value">{{ student.full_name }}</span>
+            </div>
+        </td>
+        <td>
+            <div class="field-box">
+                <span class="label">Roll Number</span>
+                <span class="value">{{ student.roll_number }}</span>
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <div class="field-box">
+                <span class="label">Enrollment Number</span>
+                <span class="value">{{ student.enrollment_number }}</span>
+            </div>
+        </td>
+        <td>
+            <div class="field-box">
+                <span class="label">Program / Batch</span>
+                <span class="value">{{ student.admission_type or 'N/A' }} / {{ student.batch or 'N/A' }}</span>
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <div class="field-box">
+                <span class="label">Contact</span>
+                <span class="value">{{ student.mobile_number }}</span>
+            </div>
+        </td>
+        <td>
+            <div class="field-box">
+                <span class="label">Email</span>
+                <span class="value">{{ student.email }}</span>
+            </div>
+        </td>
+    </tr>
+</table>
+
+<!-- =================== CLEARANCE TABLE =================== -->
+<div class="section-title">Clearance Status</div>
+<table class="clearance-table">
+<thead>
+<tr>
+    <th style="width: 5%;">#</th>
+    <th style="width: 40%;">Department</th>
+    <th style="width: 20%;">Status</th>
+    <th style="width: 20%;">Verified By</th>
+    <th style="width: 15%;">Date</th>
+</tr>
+</thead>
+<tbody>
+{% for stage in stages %}
+<tr>
+    <td>{{ loop.index }}</td>
+    <td style="font-weight:600">{{ stage.department_name }}</td>
+    <td>
+    {% if stage.status == 'Approved' %}
+        <span class="status-badge status-approved">APPROVED</span>
+    {% else %}
+        <span class="status-badge status-pending">{{ stage.status | upper }}</span>
+    {% endif %}
+    </td>
+    <td>
+    {% if stage.status == 'Approved' %}
+        <div style="font-size:9px; font-weight:600;">{{ stage.reviewer_name }}</div>
+        <div style="font-size:8px; color:#94a3b8;">(Digital Sign)</div>
+    {% else %}
+        <span style="color:#cbd5e1">-</span>
+    {% endif %}
+    </td>
+    <td style="font-size:9px;">
+        {{ stage.reviewed_at if stage.status == 'Approved' else '-' }}
+    </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<!-- =================== SUMMARY BOX =================== -->
+<div class="summary-box">
+    <div class="summary-left">
+        <span class="label">Certificate ID</span>
+        <div class="certificate-id">{{ certificate_id }}</div>
+
+        <div style="margin-top: 8px;">
+            <span class="label">Generated On</span>
+            <div class="value" style="font-size:10px;">{{ generation_date }}</div>
+        </div>
+
+        <div class="final-status">✔ Final Status: Completed</div>
     </div>
 
-    <!-- Main Form Container -->
-    <!-- Reduced padding from p-8/p-12 to p-6/p-8 to save space -->
-    <div class="page-container bg-white w-full max-w-[210mm] p-6 md:p-8 shadow-lg text-black text-sm md:text-base leading-relaxed">
-        
-        <!-- Header -->
-        <!-- Reduced bottom margin from mb-8 to mb-4 -->
-        <div class="text-center mb-4 font-bold">
-            <h1 class="text-lg md:text-xl uppercase mb-1">School of Information and Communication Technology</h1>
-            <h2 class="text-lg md:text-xl mb-4">Gautam Buddha University</h2>
-            <h3 class="text-lg underline underline-offset-4">No Dues Certificate</h3>
+    <div class="summary-right">
+        <div class="qr-frame">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data={{ certificate_url }}"
+                 width="80" height="80">
         </div>
-
-        <!-- Personal Details Section -->
-        <!-- Reduced bottom margin from mb-8 to mb-6 -->
-        <div class="border border-black mb-6">
-            <!-- Row 1: Roll Number -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Roll Number</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="roll_number" placeholder="Enter Roll Number" value="">
-                </div>
-            </div>
-            <!-- Row 2: Student Name -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Student's Name</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="student_name" placeholder="Enter Student Name" value="">
-                </div>
-            </div>
-            <!-- Row 3: Father Name -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Father's Name</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="father_name" placeholder="Enter Father's Name" value="">
-                </div>
-            </div>
-            <!-- Row 4: Contact Number -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Contact Number</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="tel" id="contact_number" placeholder="Enter Contact Number" value="">
-                </div>
-            </div>
-            <!-- Row 5: Programme -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Name of the Academic Programme</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="academic_programme" placeholder="e.g. B.Tech (ICT)" value="">
-                </div>
-            </div>
-            <!-- Row 6: Batch -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Batch</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="batch" placeholder="e.g. 2021-2025" value="">
-                </div>
-            </div>
-            <!-- Row 7: Hostel -->
-            <div class="flex border-b border-black">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50">Hostel Name & Room Number</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <input type="text" id="hostel_details" placeholder="Enter Hostel Details" value="">
-                </div>
-            </div>
-            <!-- Row 8: Address -->
-            <div class="flex">
-                <div class="w-1/3 md:w-1/4 p-1.5 border-r border-black font-semibold bg-gray-50 h-20">Postal Address</div>
-                <div class="w-2/3 md:w-3/4 p-1.5">
-                    <textarea id="postal_address" class="w-full h-full resize-none" placeholder="Enter Postal Address"></textarea>
-                </div>
-            </div>
-        </div>
-
-        <!-- Clearance Table -->
-        <!-- Reduced bottom margin -->
-        <table class="w-full border-collapse border border-black mb-6 text-sm">
-            <thead>
-                <tr class="bg-gray-100">
-                    <th class="border border-black p-1.5 w-12 text-center">S.No.</th>
-                    <th class="border border-black p-1.5 text-left w-1/3">No Dues From</th>
-                    <th class="border border-black p-1.5 text-center w-32">Remarks</th>
-                    <th class="border border-black p-1.5 text-center w-32">Name</th>
-                    <th class="border border-black p-1.5 text-center">Signature & Date</th>
-                </tr>
-            </thead>
-            <tbody>
-                <!-- Row 1: Accounts -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">1</td>
-                    <td class="border border-black p-1.5 font-medium">Account Section</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_account" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_account" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-                <!-- Row 2: Library -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">2</td>
-                    <td class="border border-black p-1.5 font-medium">Library</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_library" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_library" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-                <!-- Row 3: Hostel -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">3</td>
-                    <td class="border border-black p-1.5 font-medium">Hostel</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_hostel" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_hostel" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-                <!-- Row 4: Sports -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">4</td>
-                    <td class="border border-black p-1.5 font-medium">Sports</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_sports" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_sports" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-                <!-- Row 5: CRC -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">5</td>
-                    <td class="border border-black p-1.5 font-medium">Corporate Relations Cell (CRC)</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_crc" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_crc" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-                <!-- Row 6: Labs -->
-                <tr>
-                    <td class="border border-black p-1.5 text-center">6</td>
-                    <td class="border border-black p-1.5 font-medium">Laboratories (IP-104)<br>Technical Superintendent</td>
-                    <td class="border border-black p-0"><input type="text" id="remark_lab" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-0"><input type="text" id="name_lab" class="p-1.5 text-center"></td>
-                    <td class="border border-black p-1.5"></td>
-                </tr>
-            </tbody>
-        </table>
-
-        <!-- Notes Section -->
-        <!-- Reduced spacing -->
-        <div class="mb-8">
-            <h4 class="font-bold mb-2 uppercase text-sm">Note:-</h4>
-            <ul class="list-none pl-1 space-y-1 text-sm font-medium">
-                <li class="flex items-start">
-                    <span class="mr-2">➤</span>
-                    Please Attached Bank Pass Book Copy/Cancel Cheque.
-                </li>
-                <li class="flex items-start">
-                    <span class="mr-2">➤</span>
-                    Attached a copy of final year mark sheet/result.
-                </li>
-                <li class="flex items-start">
-                    <span class="mr-2">➤</span>
-                    Application for security refund.
-                </li>
-            </ul>
-        </div>
-
-        <!-- Footer Signatures -->
-        <!-- Reduced top margin -->
-        <div class="flex justify-between items-end mt-8 px-4 font-bold">
-            <div class="text-center">
-                <p>HoD</p>
-            </div>
-            <div class="text-center">
-                <p>Dean</p>
-            </div>
-        </div>
-
+        <div class="qr-note">Scan to Verify</div>
     </div>
+</div>
+
+<!-- =================== FOOTER =================== -->
+<div class="footer-note">
+    This is a computer-generated document and does not require a physical signature.<br>
+    School of ICT, Gautam Buddha University
+</div>
 
 </body>
 </html>

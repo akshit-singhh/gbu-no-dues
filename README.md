@@ -16,6 +16,7 @@ gbu-no-dues-management-backend
 │  │  │  ├─ department.py
 │  │  │  ├─ students.py
 │  │  │  ├─ users.py
+│  │  │  ├─ verification.py
 │  │  │  └─ __init__.py
 │  │  └─ __init__.py
 │  ├─ core
@@ -30,6 +31,7 @@ gbu-no-dues-management-backend
 │  │  ├─ application.py
 │  │  ├─ application_history.py
 │  │  ├─ application_stage.py
+│  │  ├─ certificate.py
 │  │  ├─ department.py
 │  │  ├─ enums.py
 │  │  ├─ school.py
@@ -60,6 +62,8 @@ gbu-no-dues-management-backend
 │  │  ├─ workflow_service.py
 │  │  └─ __init__.py
 │  ├─ static
+│  │  ├─ certificates
+│  │  │  └─ certificate_18cb5a20-106c-4823-aea5-599ef8bc4267.pdf
 │  │  ├─ favicon.ico
 │  │  └─ status.html
 │  ├─ templates
@@ -69,8 +73,9 @@ gbu-no-dues-management-backend
 │  │  │  ├─ application_created.html
 │  │  │  ├─ application_rejected.html
 │  │  │  └─ student_welcome.html
-│  │  └─ pdf
-│  │     └─ certificate_template.html
+│  │  ├─ pdf
+│  │  │  └─ certificate_template.html
+│  │  └─ verification.html
 │  └─ __init__.py
 ├─ Dockerfile
 ├─ LICENSE

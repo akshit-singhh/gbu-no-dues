@@ -25,6 +25,7 @@ from app.api.endpoints import (
     auth_student as auth_student_router,
     approvals as approvals_router,
     department as department_router,
+    verification as verification_router,
 )
 
 # ------------------------------------------------------------
@@ -47,7 +48,7 @@ logger.add(
 # ------------------------------------------------------------
 app = FastAPI(
     title="GBU No Dues Backend",
-    version="1.0.0",
+    version="1.2.0",
     description="Backend service for the GBU No Dues Management System.",
 )
 
@@ -155,6 +156,7 @@ app.include_router(auth_student_router.router)
 app.include_router(applications_router.router)
 app.include_router(approvals_router.router)
 app.include_router(department_router.router)
+app.include_router(verification_router.router)
 
 # ------------------------------------------------------------
 # APPLICATION STARTUP EVENTS

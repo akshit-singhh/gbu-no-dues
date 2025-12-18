@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
+from uuid import UUID
 
 from app.api.deps import get_db_session
 from app.core.rbac import AllowRoles
@@ -10,8 +11,7 @@ from app.models.application_stage import ApplicationStage
 from app.schemas.application import ApplicationCreate, ApplicationRead
 from app.services.application_service import create_application_for_student
 from app.services.email_service import send_application_created_email
-
-# We need the Enum for the pre-check (optional, but good for consistency)
+from app.services.pdf_service import generate_certificate_pdf
 from app.models.enums import OverallApplicationStatus
 
 router = APIRouter(
@@ -160,3 +160,48 @@ async def get_my_application(
             "remarks": rejected_stage.remarks if rejected_stage else None
         } if is_rejected else None
     }
+
+
+# ------------------------------------------------------------
+# DOWNLOAD CERTIFICATE
+# ------------------------------------------------------------
+@router.get("/{application_id}/certificate", response_class=Response)
+async def download_certificate(
+    application_id: str,
+    current_user: User = Depends(AllowRoles(UserRole.Student, UserRole.Admin)),
+    session: AsyncSession = Depends(get_db_session),
+):
+    # If student, ensure they own the application
+    if current_user.role == UserRole.Student:
+        # Fetch app simple check
+        result = await session.execute(
+            select(Application).where(Application.id == application_id)
+        )
+        app = result.scalar_one_or_none()
+        
+        # Check existence and ownership
+        if not app or str(app.student_id) != str(current_user.student_id):
+            raise HTTPException(status_code=403, detail="Not authorized to access this certificate")
+
+    try:
+        # Convert string to standard Python UUID object
+        app_uuid = UUID(application_id)
+        
+        # Generate PDF bytes
+        pdf_bytes = await generate_certificate_pdf(session, app_uuid)
+        
+        # Return PDF
+        filename = f"No_Dues_Certificate_{application_id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except ValueError as e:
+        # Catch logic errors from the service (e.g., app not completed)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Catch system errors (e.g., pdfkit issues)
+        print(f"Certificate Error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error generating certificate")
