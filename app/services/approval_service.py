@@ -96,7 +96,7 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     
     session.add(stage)
 
-    # 🔥 Flush changes so _update_application_status sees the new 'Approved' state
+    # Flush changes so _update_application_status sees the new 'Approved' state
     await session.flush()
 
     # 6. Recalculate Application Status

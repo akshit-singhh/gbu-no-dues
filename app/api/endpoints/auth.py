@@ -6,7 +6,14 @@ from typing import List
 from uuid import UUID
 
 # Schemas
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenWithUser
+from app.schemas.auth import (
+    LoginRequest, 
+    RegisterRequest, 
+    TokenWithUser,
+    ForgotPasswordRequest,
+    VerifyOTPRequest,
+    ResetPasswordRequest
+)
 from app.schemas.user import UserRead, UserUpdate
 from app.schemas.student import StudentRead
 
@@ -21,7 +28,10 @@ from app.services.auth_service import (
     get_user_by_email,
     list_users,
     delete_user_by_id,
-    update_user
+    update_user,
+    request_password_reset,
+    verify_reset_otp,
+    finalize_password_reset
 )
 from app.services.student_service import get_student_by_id, list_students
 
@@ -110,6 +120,62 @@ async def register_user(
         department_id=data.department_id,
     )
     return user
+
+
+# -------------------------------------------------------------------
+# PUBLIC FORGOT PASSWORD ENDPOINTS
+# -------------------------------------------------------------------
+@router.post("/forgot-password", tags=["Password Reset"])
+async def forgot_password(
+    payload: ForgotPasswordRequest, 
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Initiates password reset. Explicitly informs if user is not found.
+    """
+    try:
+        await request_password_reset(session, payload.email)
+        # Explicit Success Message
+        return {"message": f"OTP sent successfully. Please check your mail."}
+    except ValueError as e:
+        # Explicit Error Message (User Not Found)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail=str(e) # This will be "User with this email does not exist"
+        )
+
+@router.post("/verify-reset-otp", tags=["Password Reset"])
+async def verify_reset_otp_endpoint(
+    payload: VerifyOTPRequest, 
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Verifies the 6-digit OTP sent to the user's email.
+    """
+    is_valid = await verify_reset_otp(session, payload.email, payload.otp)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    return {"message": "OTP verified successfully"}
+
+
+@router.post("/reset-password", tags=["Password Reset"])
+async def reset_password(
+    payload: ResetPasswordRequest, 
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Finalizes the password reset process by setting a new password.
+    """
+    try:
+        await finalize_password_reset(
+            session, 
+            payload.email, 
+            payload.otp, 
+            payload.new_password
+        )
+        return {"message": "Password updated successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # -------------------------------------------------------------------

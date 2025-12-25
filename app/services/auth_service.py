@@ -4,6 +4,8 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 import uuid
+import random
+from datetime import datetime, timedelta, timezone # Added timezone
 
 from app.models.user import User, UserRole
 from app.models.student import Student
@@ -86,7 +88,7 @@ async def create_user(
 
 
 # ============================================================================
-# AUTHENTICATE ADMIN/STaff/HOD
+# AUTHENTICATE ADMIN/Staff/HOD
 # ============================================================================
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> User | None:
     user = await get_user_by_email(session, email)
@@ -194,6 +196,73 @@ async def authenticate_student(
 
 
 # ============================================================================
+# FORGOT PASSWORD LOGIC
+# ============================================================================
+
+async def request_password_reset(session: AsyncSession, email: str):
+    """
+    Business logic for password reset.
+    """
+    user = await get_user_by_email(session, email)
+    if not user:
+        # Raise error so the API knows not to attempt sending an email
+        raise ValueError("User not found")
+
+    # Generate and save OTP with timezone-aware expiry
+    otp = f"{random.randint(100000, 999999)}"
+    user.otp_code = otp
+    user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    session.add(user)
+    await session.commit()
+    
+    # Trigger the email only for valid users
+    from app.services.email_service import send_password_reset_email
+    send_password_reset_email(user.email, otp)
+    
+    return True
+
+
+async def verify_reset_otp(session: AsyncSession, email: str, otp: str) -> bool:
+    """
+    Checks if the provided OTP is valid and not expired.
+    """
+    user = await get_user_by_email(session, email)
+    if not user or user.otp_code != otp:
+        return False
+    
+    # FIX: Compare using timezone-aware UTC
+    if user.otp_expires_at and user.otp_expires_at < datetime.now(timezone.utc):
+        return False
+        
+    return True
+
+
+async def finalize_password_reset(session: AsyncSession, email: str, otp: str, new_password: str):
+    """
+    Verifies OTP one last time, updates password, and clears OTP fields.
+    """
+    user = await get_user_by_email(session, email)
+    if not user or user.otp_code != otp:
+        raise ValueError("Invalid or expired OTP")
+
+    # FIX: Use timezone-aware UTC datetime for comparison
+    if user.otp_expires_at and user.otp_expires_at < datetime.now(timezone.utc):
+        raise ValueError("OTP has expired")
+
+    # Update password using existing hash utility
+    user.password_hash = hash_password(new_password)
+    
+    # Clear OTP fields after successful reset
+    user.otp_code = None
+    user.otp_expires_at = None
+
+    session.add(user)
+    await session.commit()
+    return True
+
+
+# ============================================================================
 # LIST USERS
 # ============================================================================
 async def list_users(session: AsyncSession) -> list[User]:
@@ -233,7 +302,6 @@ async def update_user(
     if not user:
         raise ValueError("User not found")
 
-    # -------- Email Update ----------
     if email and email != user.email:
         dup = await session.execute(select(User).where(User.email == email))
         if dup.scalar_one_or_none():
@@ -243,9 +311,7 @@ async def update_user(
     if name:
         user.name = name
 
-    # -------- Role Update Logic ----------
     if role:
-        # Validation rules same as create_user()
         if role == UserRole.Staff and department_id is None and user.department_id is None:
             raise ValueError("Staff must be assigned to a department")
         if role != UserRole.Staff and department_id is not None:
@@ -253,7 +319,6 @@ async def update_user(
 
         user.role = role
 
-    # -------- Department Update Logic ----------
     if department_id is not None:
         if user.role != UserRole.Staff:
             raise ValueError("Only Staff can have department")

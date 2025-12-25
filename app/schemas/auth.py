@@ -1,3 +1,5 @@
+# app/schemas/auth.py
+
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from uuid import UUID
@@ -96,3 +98,23 @@ class StudentLoginResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# -------------------------------------------------------------------
+# FORGOT PASSWORD SCHEMAS
+# -------------------------------------------------------------------
+
+class ForgotPasswordRequest(BaseModel):
+    """Request to initiate password reset by sending an OTP."""
+    email: EmailStr
+
+class VerifyOTPRequest(BaseModel):
+    """Request to verify the 6-digit OTP sent to email."""
+    email: EmailStr
+    otp: str
+
+class ResetPasswordRequest(BaseModel):
+    """Request to set a new password after successful OTP verification."""
+    email: EmailStr
+    otp: str
+    new_password: str

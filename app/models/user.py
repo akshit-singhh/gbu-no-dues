@@ -2,7 +2,7 @@
 
 from sqlmodel import SQLModel, Field, Column
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy import DateTime, ForeignKey, String  # Added String
 from sqlalchemy import Enum as PGEnum
 from datetime import datetime
 import uuid
@@ -41,6 +41,16 @@ class User(SQLModel, table=True):
     student_id: Optional[uuid.UUID] = Field(
         default=None,
         sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
+    )
+
+    # --- New Fields for Forgot Password Feature ---
+    otp_code: Optional[str] = Field(
+        default=None, 
+        sa_column=Column(String, nullable=True)
+    )
+    otp_expires_at: Optional[datetime] = Field(
+        default=None, 
+        sa_column=Column(DateTime(timezone=True), nullable=True)
     )
 
     created_at: datetime = Field(

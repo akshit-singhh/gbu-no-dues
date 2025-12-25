@@ -55,7 +55,7 @@ engine = create_async_engine(
     future=True,
     connect_args=connect_args,
     pool_pre_ping=True,
-    poolclass=NullPool,       # required for Pooler
+    poolclass=NullPool,
 )
 
 
@@ -83,7 +83,7 @@ async def init_db():
 
 
 # ----------------------------------------------------
-# Test Connection (SAFE)
+# Test Connection
 # ----------------------------------------------------
 async def test_connection():
     async with engine.connect() as conn:

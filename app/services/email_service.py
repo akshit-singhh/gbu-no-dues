@@ -1,3 +1,5 @@
+# app/services/email_service.py
+
 import smtplib
 import os
 from datetime import datetime
@@ -98,7 +100,7 @@ def send_application_approved_email(data: dict):
             "enrollment_number": data.get("enrollment_number"),
             "application_id": str(data.get("application_id")),
             "completion_date": datetime.now().strftime("%d-%m-%Y"),
-            "certificate_url": f"{settings.FRONTEND_URL}/certificate/download/{data.get('application_id')}" 
+            "certificate_url": f"{settings.FRONTEND_URL}/certificate/download/{data.get('application_id')}"
         }
         html_content = template.render(context)
         send_email_via_smtp(data.get("email"), "🎉 No Dues Application Approved", html_content)
@@ -106,7 +108,7 @@ def send_application_approved_email(data: dict):
         print(f"Error preparing approval email: {e}")
         
 # ---------------------------------------------------------
-# 4. APPLICATION SUBMITTED EMAIL (NEW)
+# 4. APPLICATION SUBMITTED EMAIL
 # ---------------------------------------------------------
 def send_application_created_email(data: dict):
     """
@@ -124,3 +126,23 @@ def send_application_created_email(data: dict):
         send_email_via_smtp(data.get("email"), "Application Submitted Successfully - GBU No Dues", html_content)
     except Exception as e:
         print(f"Error preparing submission email: {e}")
+
+
+# ---------------------------------------------------------
+# 5. PASSWORD RESET OTP EMAIL
+# ---------------------------------------------------------
+def send_password_reset_email(email: str, otp: str):
+    """
+    Sends a 6-digit OTP to the user for password reset.
+    """
+    try:
+        template = get_template('password_reset.html')
+        context = {
+            "otp": otp,
+            "expiry_minutes": 15,
+            "support_email": settings.EMAILS_FROM_EMAIL
+        }
+        html_content = template.render(context)
+        send_email_via_smtp(email, "Password Reset OTP - GBU No Dues", html_content)
+    except Exception as e:
+        print(f"Error preparing password reset email: {e}")
