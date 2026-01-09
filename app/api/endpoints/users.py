@@ -17,7 +17,8 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 # -------------------------------------------------------------------
 # Create ANY user (Super Admin only)
 # -------------------------------------------------------------------
-@router.post("/", response_model=UserRead)
+# ✅ FIX: Added status_code=201 to match typical REST patterns and test expectations
+@router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def create_new_user(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),

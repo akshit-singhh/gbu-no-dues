@@ -48,7 +48,8 @@ async def create_application(
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student profile linked to user")
 
-    student_id = str(current_user.student_id)
+    # ✅ FIX: Use UUID object directly (do not cast to str)
+    student_id = current_user.student_id
 
     # 1. FETCH & UPDATE STUDENT PROFILE
     student_res = await session.execute(select(Student).where(Student.id == student_id))
@@ -78,6 +79,7 @@ async def create_application(
     try:
         new_app = await create_application_for_student(
             session=session,
+            # ✅ FIX: Pass UUID object (service likely expects UUID or handles it)
             student_id=student_id,
             payload=payload 
         )
@@ -120,7 +122,8 @@ async def get_my_application(
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student linked to account")
 
-    student_id = str(current_user.student_id)
+    # ✅ FIX: Use UUID object directly
+    student_id = current_user.student_id
 
     # 1. Get Application
     result = await session.execute(
@@ -232,6 +235,7 @@ async def download_certificate(
         )
         app = result.scalar_one_or_none()
         
+        # ✅ FIX: Compare UUID objects or convert both to str safely
         if not app or str(app.student_id) != str(current_user.student_id):
             raise HTTPException(status_code=403, detail="Not authorized")
 

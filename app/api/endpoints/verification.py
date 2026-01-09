@@ -30,7 +30,7 @@ from app.services.auth_service import (
 )
 from app.services.email_service import send_reset_password_email 
 
-router = APIRouter(tags=["Verification"])
+router = APIRouter(prefix="/api/verification", tags=["Verification"])
 
 # Ensure templates directory is correct
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
