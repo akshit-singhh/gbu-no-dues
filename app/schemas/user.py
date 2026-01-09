@@ -1,6 +1,6 @@
 from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from app.models.user import UserRole
 
 
@@ -18,7 +18,8 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     role: UserRole
-    department_id: Optional[int] = None   # Only required for Staff users
+    department_id: Optional[int] = None   # Required if Role = Staff
+    school_id: Optional[int] = None       # Required if Role = Dean
 
 
 # ---------------------------------------------------------
@@ -28,7 +29,8 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     role: Optional[UserRole] = None
-    department_id: Optional[int] = None   # nullable
+    department_id: Optional[int] = None
+    school_id: Optional[int] = None
 
 
 # ---------------------------------------------------------
@@ -37,9 +39,13 @@ class UserUpdate(BaseModel):
 class UserRead(UserBase):
     id: UUID
     role: UserRole | str
+    
+    # Department Info
     department_id: Optional[int] = None
     department_name: Optional[str] = None
+    
+    # School Info (For Deans)
+    school_id: Optional[int] = None
+    school_name: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-
+    model_config = ConfigDict(from_attributes=True)

@@ -1,13 +1,26 @@
 import pytest
+from app.models.user import UserRole
+from app.core.security import create_access_token
 
 @pytest.mark.asyncio
-async def test_list_users_route(client):
-    res = await client.get("/api/users/")
-    assert res.status_code in (200, 401, 403)
+async def test_admin_create_user(client):
+    admin_token = create_access_token(subject="admin_id", data={"role": "admin"})
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    payload = {
+        "name": "Test Staff",
+        "email": "staff_new@test.com",
+        "password": "pw",
+        "role": "staff",
+        "is_active": True
+    }
+    res = await client.post("/api/users/", json=payload, headers=headers)
+    assert res.status_code == 201
 
 @pytest.mark.asyncio
-async def test_create_user_route(client):
-    payload = {"name": "Test User", "email": "testuser@example.com", "password": "password123", "role": "Office"}
-    res = await client.post("/api/users/", json=payload)
-    # creation may be protected by admin; ensure route exists
-    assert res.status_code in (200, 201, 400, 401, 403)
+async def test_admin_list_users(client):
+    admin_token = create_access_token(subject="admin_id", data={"role": "admin"})
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    
+    res = await client.get("/api/users/", headers=headers)
+    assert res.status_code == 200

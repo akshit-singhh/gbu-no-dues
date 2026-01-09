@@ -24,7 +24,3 @@ async def student_login_endpoint(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return auth
-
-
-
-

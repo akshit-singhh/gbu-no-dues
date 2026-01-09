@@ -131,18 +131,20 @@ def send_application_created_email(data: dict):
 # ---------------------------------------------------------
 # 5. PASSWORD RESET OTP EMAIL
 # ---------------------------------------------------------
-def send_password_reset_email(email: str, otp: str):
+def send_reset_password_email(data: dict):
     """
     Sends a 6-digit OTP to the user for password reset.
+    Expecting data = {"email": "...", "name": "...", "otp": "..."}
     """
     try:
         template = get_template('password_reset.html')
         context = {
-            "otp": otp,
+            "name": data.get("name", "User"),
+            "otp": data.get("otp"),
             "expiry_minutes": 15,
             "support_email": settings.EMAILS_FROM_EMAIL
         }
         html_content = template.render(context)
-        send_email_via_smtp(email, "Password Reset OTP - GBU No Dues", html_content)
+        send_email_via_smtp(data.get("email"), "Password Reset OTP - GBU No Dues", html_content)
     except Exception as e:
         print(f"Error preparing password reset email: {e}")

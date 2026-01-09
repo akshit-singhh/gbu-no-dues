@@ -1,59 +1,76 @@
 # app/models/user.py
 
-from sqlmodel import SQLModel, Field, Column
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy import DateTime, ForeignKey, String  # Added String
-from sqlalchemy import Enum as PGEnum
-from datetime import datetime
-import uuid
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, List
+from uuid import UUID, uuid4
+from datetime import datetime
+from sqlmodel import Field, SQLModel, Relationship
+from sqlalchemy import Column, String, DateTime
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+# Prevent circular imports
+if TYPE_CHECKING:
+    from app.models.student import Student
+    from app.models.application_stage import ApplicationStage
 
 class UserRole(str, Enum):
-    Admin = "Admin"
-    HOD = "HOD"
-    Staff = "Staff"    # any department-level staff (Library, Hostel, Accounts, etc.)
-    Student = "Student"
+    # System Roles
+    SuperAdmin = "super_admin"   # System Owner
+    Admin = "admin"              # Generic Admin
+    Student = "student"          # Students
+    
+    # Generic Staff Role
+    Staff = "staff"
+
+    # Specific Authority Roles (For No Dues Approvals)
+    Dean = "dean"                # Dean of School
+    HOD = "hod"                  # Head of Department
+    Library = "library"          # Library Staff
+    Hostel = "hostel"            # Hostel Warden
+    Lab = "lab"                  # Lab In-charge
+    Account = "account"          # Accounts Department
+    Sports = "sports"            # Sports Officer
+    CRC = "crc"                  # Corporate Resource Center
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
 
-    id: uuid.UUID = Field(
-        default_factory=uuid.uuid4,
+    id: UUID = Field(
+        default_factory=uuid4,
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
 
-    name: str = Field(nullable=False)
-    email: str = Field(nullable=False, index=True, unique=True)
-    password_hash: str = Field(nullable=False)
+    name: str = Field(sa_column=Column(String, nullable=False))
+    email: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
+    password_hash: str = Field(sa_column=Column(String, nullable=False))
+    
+    # default to Student, but can be any role
+    role: UserRole = Field(sa_column=Column(String, default=UserRole.Student.value))
+    
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # role saved as a Postgres ENUM but only the stable values above
-    role: UserRole = Field(
-        sa_column=Column(PGEnum(UserRole, name="user_role"), nullable=False)
-    )
+    # --------------------------------------------------------
+    # FOREIGN KEYS
+    # --------------------------------------------------------
+    # Link to Student Profile
+    student_id: Optional[UUID] = Field(default=None, foreign_key="students.id")
 
-    # department_id is a foreign key to departments table (dynamic list of departments)
-    department_id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(ForeignKey("departments.id"), nullable=True)
-    )
+    # Routing Foreign Keys
+    school_id: Optional[int] = Field(default=None, foreign_key="schools.id")
+    department_id: Optional[int] = Field(default=None, foreign_key="departments.id")
 
-    student_id: Optional[uuid.UUID] = Field(
-        default=None,
-        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("students.id"), nullable=True)
-    )
+    # --------------------------------------------------------
+    #  PASSWORD RESET
+    # --------------------------------------------------------
+    # These match the columns you added to your database
+    otp_code: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    otp_expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
 
-    # --- New Fields for Forgot Password Feature ---
-    otp_code: Optional[str] = Field(
-        default=None, 
-        sa_column=Column(String, nullable=True)
-    )
-    otp_expires_at: Optional[datetime] = Field(
-        default=None, 
-        sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
+    # --------------------------------------------------------
+    # RELATIONSHIPS
+    # --------------------------------------------------------
+    student: Optional["Student"] = Relationship(back_populates="user")
+    
+    # Optional: Relationship to stages verified by this user
+    verified_stages: List["ApplicationStage"] = Relationship(back_populates="verifier")

@@ -5,6 +5,7 @@ import ssl
 from dotenv import load_dotenv
 from typing import AsyncGenerator
 
+from loguru import logger
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -35,19 +36,18 @@ def make_ssl():
 
 
 # ----------------------------------------------------
-# AsyncPG SAFE Config (works with Supabase POOLER)
+# AsyncPG SAFE Config (Supabase PgBouncer)
 # ----------------------------------------------------
 connect_args = {
     "ssl": make_ssl(),
-    "statement_cache_size": 0,           # disable prepared statements
-    "prepared_statement_name_func": None # prevent SQLAlchemy from naming statements
+    "statement_cache_size": 0,  # CRITICAL: Disable prepared statements for PgBouncer
 }
 
-print("🔄 Configuring Database (Pooler Mode)")
+logger.info("🔄 Configuring Database (Pooler Mode)")
 
 
 # ----------------------------------------------------
-# Engine (NO POOLING → Supabase pooler handles it)
+# Engine (NO SQLAlchemy pooling)
 # ----------------------------------------------------
 engine = create_async_engine(
     DATABASE_URL,
@@ -55,7 +55,7 @@ engine = create_async_engine(
     future=True,
     connect_args=connect_args,
     pool_pre_ping=True,
-    poolclass=NullPool,
+    poolclass=NullPool,  # Supabase PgBouncer handles pooling
 )
 
 
@@ -65,7 +65,7 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
 
 
@@ -75,7 +75,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 # ----------------------------------------------------
-# Create tables
+# Create tables (DEV / TEST ONLY)
 # ----------------------------------------------------
 async def init_db():
     async with engine.begin() as conn:
@@ -83,9 +83,9 @@ async def init_db():
 
 
 # ----------------------------------------------------
-# Test Connection
+# Test Connection (Silent, Safe for Metrics)
 # ----------------------------------------------------
 async def test_connection():
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
-        print("✅ DB Connection OK (Pooler)")
+        logger.debug("DB connection OK (Pooler)")

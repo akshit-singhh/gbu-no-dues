@@ -1,18 +1,28 @@
+# app/api/endpoints/applications.py
+
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlmodel import select
 from uuid import UUID
+from typing import Any
 
 from app.api.deps import get_db_session
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
-from app.models.application import Application
-from app.models.application_stage import ApplicationStage
+
+# ----------------------------------------------------------------
+# MODEL & SCHEMA IMPORTS
+# ----------------------------------------------------------------
+from app.models.student import Student 
+from app.models.application import Application, ApplicationStatus
+from app.models.application_stage import ApplicationStage 
+
+from app.core.storage import get_signed_url
 from app.schemas.application import ApplicationCreate, ApplicationRead
 from app.services.application_service import create_application_for_student
 from app.services.email_service import send_application_created_email
 from app.services.pdf_service import generate_certificate_pdf
-from app.models.enums import OverallApplicationStatus
 
 router = APIRouter(
     prefix="/api/applications",
@@ -21,62 +31,72 @@ router = APIRouter(
 
 
 # ------------------------------------------------------------
-# CREATE APPLICATION
+# CREATE APPLICATION (Step 2: Submit Details + Proof Path)
 # ------------------------------------------------------------
 @router.post("/create", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
 async def create_application(
-    payload: ApplicationCreate,
+    payload: ApplicationCreate,  # Receives JSON Payload (Path + Student Details)
     background_tasks: BackgroundTasks,
     current_user: User = Depends(AllowRoles(UserRole.Student)),
     session: AsyncSession = Depends(get_db_session),
 ):
+    """
+    Creates a new application.
+    - Updates the Student Profile with details.
+    - Saves the Application with the internal file path (proof_document_url).
+    """
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student profile linked to user")
 
-    student_id = str(current_user.student_id) # Ensure it's a string for the service
+    student_id = str(current_user.student_id)
 
-    # Optional: Fast-fail check at endpoint level
-    # (The service also checks this, but this saves a service call if obvious)
-    result = await session.execute(
-        select(Application)
-        .where(
-            (Application.student_id == student_id) &
-            (Application.status.in_([
-                OverallApplicationStatus.Pending,
-                OverallApplicationStatus.InProgress
-            ]))
-        )
-    )
-    existing_app = result.scalars().first()
+    # 1. FETCH & UPDATE STUDENT PROFILE
+    student_res = await session.execute(select(Student).where(Student.id == student_id))
+    student = student_res.scalar_one()
 
-    if existing_app:
-        raise HTTPException(
-            status_code=400,
-            detail="You already have an active application."
-        )
+    # Update profile fields
+    student.father_name = payload.father_name
+    student.mother_name = payload.mother_name
+    student.gender = payload.gender
+    student.category = payload.category
+    student.dob = payload.dob
+    student.permanent_address = payload.permanent_address
+    student.domicile = payload.domicile
+    
+    student.is_hosteller = payload.is_hosteller
+    student.hostel_name = payload.hostel_name
+    student.hostel_room = payload.hostel_room
+    
+    student.batch = payload.batch
+    student.section = payload.section
+    student.admission_year = payload.admission_year
+    student.admission_type = payload.admission_type
+    
+    session.add(student)
 
-    # Call Service Layer with Error Handling
+    # 2. CREATE APPLICATION (Service handles duplicates logic)
     try:
         new_app = await create_application_for_student(
             session=session,
             student_id=student_id,
-            payload=payload.dict(exclude_none=True)
-        )
-    except ValueError as e:
-        # This catches "Already completed", "Student not found", etc.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        # Log the actual error for debugging (print or logger)
-        print(f"CRITICAL ERROR creating application: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An internal error occurred while creating the application."
+            payload=payload 
         )
 
-    # Send Email Notification via Background Task
+        # 3. LINK PROOF DOCUMENT
+        # We save the internal path (e.g. "uuid/file.pdf") to the database
+        new_app.proof_document_url = payload.proof_document_url
+        session.add(new_app)
+
+        await session.commit()
+        await session.refresh(new_app)
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"CRITICAL ERROR creating application: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    # 4. SEND EMAIL
     if current_user.email:
         email_data = {
             "name": current_user.name,
@@ -85,37 +105,41 @@ async def create_application(
         }
         background_tasks.add_task(send_application_created_email, email_data)
 
-    return ApplicationRead.from_orm(new_app)
+    return ApplicationRead.model_validate(new_app)
 
 
 # ------------------------------------------------------------
-# GET MY APPLICATION + STAGES
+# GET MY APPLICATION (With Resubmission Support)
 # ------------------------------------------------------------
 @router.get("/my", status_code=200)
 async def get_my_application(
     current_user: User = Depends(AllowRoles(UserRole.Student)),
     session: AsyncSession = Depends(get_db_session),
-):
+) -> Any:
+    
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student linked to account")
 
     student_id = str(current_user.student_id)
 
-    # Get latest application (student may have previous completed ones)
+    # 1. Get Application
     result = await session.execute(
         select(Application)
         .where(Application.student_id == student_id)
         .order_by(Application.created_at.desc())
+        .options(
+            selectinload(Application.student).selectinload(Student.school),
+        )
     )
     app = result.scalars().first()
 
     if not app:
         return {
             "application": None,
-            "message": "No application found for this student."
+            "message": "No application found."
         }
 
-    # Fetch its stages
+    # 2. Fetch Stages
     stage_result = await session.execute(
         select(ApplicationStage)
         .where(ApplicationStage.application_id == app.id)
@@ -123,41 +147,67 @@ async def get_my_application(
     )
     stages = stage_result.scalars().all()
 
-    # Flags
-    is_rejected = any(s.status == "Rejected" for s in stages)
-    rejected_stage = next((s for s in stages if s.status == "Rejected"), None)
-    is_completed = all(s.status == "Approved" for s in stages)
+    # 3. Calculate Flags
+    is_rejected = any(s.status == str(ApplicationStatus.REJECTED.value) for s in stages)
+    rejected_stage = next((s for s in stages if s.status == str(ApplicationStatus.REJECTED.value)), None)
+    is_completed = str(app.status) == str(ApplicationStatus.COMPLETED.value)
 
+    #  4. GENERATE SIGNED URL
+    # We take the stored path and convert it to a temporary secure link for VIEWING
+    signed_proof_link = None
+    if app.proof_document_url:
+        signed_proof_link = get_signed_url(app.proof_document_url)
+
+    # 5. Construct Full Response
     return {
+        "student": {
+            "full_name": app.student.full_name,
+            "enrollment_number": app.student.enrollment_number,
+            "roll_number": app.student.roll_number,
+            "email": app.student.email,
+            "mobile_number": app.student.mobile_number,
+            "school_name": app.student.school.name if app.student.school else "N/A",
+            "batch": app.student.batch,
+            # Return these too so frontend form can pre-fill
+            "father_name": app.student.father_name,
+            "hostel_name": app.student.hostel_name,
+        },
         "application": {
             "id": app.id,
             "status": app.status,
-            "current_department_id": app.current_department_id,
+            "current_stage_order": app.current_stage_order,
             "remarks": app.remarks,
+            
+            # FIELD 1: Clickable Link (Signed, Expiring) -> For User to VIEW
+            "proof_document_url": signed_proof_link, 
+            
+            # FIELD 2: Raw Path (Internal) -> For Frontend to RESUBMIT logic
+            "proof_path": app.proof_document_url,
+
             "created_at": app.created_at,
             "updated_at": app.updated_at,
         },
         "stages": [
             {
                 "id": s.id,
-                "department_id": s.department_id,
+                "verifier_role": s.verifier_role,
                 "status": s.status,
-                "priority": s.priority,
-                "remarks": s.remarks,
-                "reviewer_id": s.reviewer_id,
                 "sequence_order": s.sequence_order,
-                "reviewed_at": s.reviewed_at,
+                "department_id": s.department_id,
+                "comments": s.comments, 
+                "verified_by": s.verified_by,
+                "verified_at": s.verified_at,
             }
             for s in stages
         ],
         "flags": {
             "is_rejected": is_rejected,
             "is_completed": is_completed,
-            "is_in_progress": (app.status == "InProgress"),
+            "is_in_progress": (str(app.status) == str(ApplicationStatus.IN_PROGRESS.value)),
         },
         "rejection_details": {
-            "department_id": rejected_stage.department_id if rejected_stage else None,
-            "remarks": rejected_stage.remarks if rejected_stage else None
+            "role": rejected_stage.verifier_role if rejected_stage else None,
+            "remarks": rejected_stage.comments if rejected_stage else None
         } if is_rejected else None
     }
 
@@ -171,26 +221,26 @@ async def download_certificate(
     current_user: User = Depends(AllowRoles(UserRole.Student, UserRole.Admin)),
     session: AsyncSession = Depends(get_db_session),
 ):
-    # If student, ensure they own the application
+    # Validate User Access
     if current_user.role == UserRole.Student:
-        # Fetch app simple check
+        if not current_user.student_id:
+             raise HTTPException(status_code=403, detail="Student profile missing")
+             
+        # Verify ownership
         result = await session.execute(
             select(Application).where(Application.id == application_id)
         )
         app = result.scalar_one_or_none()
         
-        # Check existence and ownership
         if not app or str(app.student_id) != str(current_user.student_id):
-            raise HTTPException(status_code=403, detail="Not authorized to access this certificate")
+            raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
-        # Convert string to standard Python UUID object
         app_uuid = UUID(application_id)
         
-        # Generate PDF bytes
+        # Generate PDF
         pdf_bytes = await generate_certificate_pdf(session, app_uuid)
         
-        # Return PDF
         filename = f"No_Dues_Certificate_{application_id}.pdf"
         return Response(
             content=pdf_bytes,
@@ -199,9 +249,7 @@ async def download_certificate(
         )
         
     except ValueError as e:
-        # Catch logic errors from the service (e.g., app not completed)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Catch system errors (e.g., pdfkit issues)
         print(f"Certificate Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error generating certificate")
+        raise HTTPException(status_code=500, detail="Internal Server Error")

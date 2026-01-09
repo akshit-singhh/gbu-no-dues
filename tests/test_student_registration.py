@@ -2,34 +2,68 @@ import pytest
 import random
 import string
 
-def random_string(length=10):
-    return ''.join(random.choices(string.ascii_letters, k=length))
-
 def random_number(length=10):
     return ''.join(random.choices(string.digits, k=length))
 
+def random_string(length=5):
+    return ''.join(random.choices(string.ascii_letters, k=length))
+
 @pytest.mark.asyncio
-async def test_student_register(client):
-    # Generate random data to avoid "User already exists" (400) errors
+async def test_student_register_success(client):
     enrollment = random_number(10)
-    email = f"test.{random_string(5)}@example.com"
+    email = f"test.{random_string()}@example.com"
     
     payload = {
         "enrollment_number": enrollment,
         "roll_number": f"ROLL{random_number(5)}",
-        "full_name": "Test Student",
+        "full_name": "Test Student Success",
         "mobile_number": random_number(10),
         "email": email,
         "password": "password123",
-        "confirm_password": "password123"
+        "confirm_password": "password123",
+        # ✅ FIX: Add required fields
+        "school_id": "1", 
+        "batch": "2022-2026",
+        "section": "A",
+        "admission_year": 2022,
+        "admission_type": "Regular"
     }
 
     res = await client.post("/api/students/register", json=payload)
     
-    # Debugging: print response if it fails
-    if res.status_code not in (200, 201):
-        print(f"Registration failed: {res.json()}")
+    if res.status_code != 201:
+        print(f"DEBUG Error: {res.json()}")
 
-    assert res.status_code in (200, 201)
+    assert res.status_code == 201
     data = res.json()
-    assert "id" in data or "enrollment_number" in data
+    assert data["email"] == email
+
+@pytest.mark.asyncio
+async def test_student_register_duplicate(client):
+    # Setup data
+    enrollment = random_number(10)
+    email = f"dup.{random_string()}@example.com"
+    roll = f"ROLL{random_number(5)}"
+    
+    payload = {
+        "enrollment_number": enrollment,
+        "roll_number": roll,
+        "full_name": "Original Student",
+        "mobile_number": random_number(10),
+        "email": email,
+        "password": "password123",
+        "confirm_password": "password123",
+        "school_id": "1", # ✅ FIX
+        "batch": "2025",
+        "section": "B",
+        "admission_year": 2022,
+        "admission_type": "Regular"
+    }
+    
+    # 1. Register Success
+    res1 = await client.post("/api/students/register", json=payload)
+    assert res1.status_code == 201
+
+    # 2. Register Duplicate -> Fail
+    res2 = await client.post("/api/students/register", json=payload)
+    assert res2.status_code == 400

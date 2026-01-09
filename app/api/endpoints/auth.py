@@ -1,6 +1,7 @@
 # app/api/endpoints/auth.py
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from typing import List
 from uuid import UUID
@@ -10,15 +11,16 @@ from app.schemas.auth import (
     LoginRequest, 
     RegisterRequest, 
     TokenWithUser,
-    ForgotPasswordRequest,
-    VerifyOTPRequest,
-    ResetPasswordRequest
+    SchoolCreateRequest,
+    DepartmentCreateRequest
 )
 from app.schemas.user import UserRead, UserUpdate
 from app.schemas.student import StudentRead
 
 # Models
 from app.models.user import UserRole, User
+from app.models.school import School
+from app.models.department import Department
 
 # Services
 from app.services.auth_service import (
@@ -28,10 +30,7 @@ from app.services.auth_service import (
     get_user_by_email,
     list_users,
     delete_user_by_id,
-    update_user,
-    request_password_reset,
-    verify_reset_otp,
-    finalize_password_reset
+    update_user
 )
 from app.services.student_service import get_student_by_id, list_students
 
@@ -57,6 +56,58 @@ async def login(
     return await create_login_response(user, session)
 
 
+# ===================================================================
+# 1. CREATE SCHOOL (For Deans)
+# ===================================================================
+@router.post("/schools", status_code=status.HTTP_201_CREATED)
+async def create_school(
+    payload: SchoolCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_super_admin),
+):
+    """
+    Create a new School (e.g., 'School of ICT').
+    Returns the ID needed to register a Dean.
+    """
+    # Check if school exists
+    res = await session.execute(select(School).where(School.name == payload.name))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="School with this name already exists")
+
+    new_school = School(name=payload.name)
+    session.add(new_school)
+    await session.commit()
+    await session.refresh(new_school)
+    
+    return {"message": "School created successfully", "school_id": new_school.id, "name": new_school.name}
+
+
+# ===================================================================
+# 2. CREATE DEPARTMENT (For Staff)
+# ===================================================================
+@router.post("/departments", status_code=status.HTTP_201_CREATED)
+async def create_department(
+    payload: DepartmentCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_super_admin),
+):
+    """
+    Create a new Department (e.g., 'Dept of Computer Science').
+    Returns the ID needed to register Staff.
+    """
+    # Check if department exists
+    res = await session.execute(select(Department).where(Department.name == payload.name))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Department with this name already exists")
+
+    new_dept = Department(name=payload.name)
+    session.add(new_dept)
+    await session.commit()
+    await session.refresh(new_dept)
+    
+    return {"message": "Department created successfully", "department_id": new_dept.id, "name": new_dept.name}
+
+
 # -------------------------------------------------------------------
 # REGISTER SUPER ADMIN
 # -------------------------------------------------------------------
@@ -79,13 +130,14 @@ async def register_super_admin(
         email=data.email,
         password=data.password,
         role=UserRole.Admin,
-        department_id=None
+        department_id=None,
+        school_id=None
     )
     return user
 
 
 # -------------------------------------------------------------------
-# REGISTER NORMAL USER (HOD / Staff)
+# REGISTER NORMAL USER (Dean / Staff)
 # -------------------------------------------------------------------
 @router.post("/register-user", response_model=UserRead)
 async def register_user(
@@ -93,6 +145,9 @@ async def register_user(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_super_admin),
 ):
+    """
+    Register a Dean (requires school_id) or Staff (requires department_id).
+    """
     # BLOCK ADMIN
     if data.role == UserRole.Admin:
         raise HTTPException(400, detail="Use /register-super-admin for Admin accounts.")
@@ -102,15 +157,23 @@ async def register_user(
     if existing:
         raise HTTPException(400, detail="Email already exists")
 
-    # Staff must have a department_id
+    # VALIDATION LOGIC
+    
+    # 1. Staff Logic
     if data.role == UserRole.Staff:
         if not data.department_id:
             raise HTTPException(400, detail="department_id is required for Staff users")
+        if data.school_id:
+            raise HTTPException(400, detail="Staff cannot be assigned to a School (use Dean for that)")
 
-    # HOD also must have department assignment (optional for now)
-    if data.role == UserRole.HOD and not data.department_id:
-        raise HTTPException(400, detail="HOD must belong to a department")
+    # 2. Dean Logic
+    elif data.role == UserRole.Dean:
+        if not data.school_id:
+            raise HTTPException(400, detail="school_id is required for Dean users.")
+        if data.department_id:
+            raise HTTPException(400, detail="Deans cannot be assigned to a Department (use Staff for that)")
 
+    # CREATE USER
     user = await create_user(
         session=session,
         name=data.name,
@@ -118,64 +181,9 @@ async def register_user(
         password=data.password,
         role=data.role,
         department_id=data.department_id,
+        school_id=data.school_id 
     )
     return user
-
-
-# -------------------------------------------------------------------
-# PUBLIC FORGOT PASSWORD ENDPOINTS
-# -------------------------------------------------------------------
-@router.post("/forgot-password", tags=["Password Reset"])
-async def forgot_password(
-    payload: ForgotPasswordRequest, 
-    session: AsyncSession = Depends(get_db_session)
-):
-    """
-    Initiates password reset. Explicitly informs if user is not found.
-    """
-    try:
-        await request_password_reset(session, payload.email)
-        # Explicit Success Message
-        return {"message": f"OTP sent successfully. Please check your mail."}
-    except ValueError as e:
-        # Explicit Error Message (User Not Found)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail=str(e) # This will be "User with this email does not exist"
-        )
-
-@router.post("/verify-reset-otp", tags=["Password Reset"])
-async def verify_reset_otp_endpoint(
-    payload: VerifyOTPRequest, 
-    session: AsyncSession = Depends(get_db_session)
-):
-    """
-    Verifies the 6-digit OTP sent to the user's email.
-    """
-    is_valid = await verify_reset_otp(session, payload.email, payload.otp)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-    return {"message": "OTP verified successfully"}
-
-
-@router.post("/reset-password", tags=["Password Reset"])
-async def reset_password(
-    payload: ResetPasswordRequest, 
-    session: AsyncSession = Depends(get_db_session)
-):
-    """
-    Finalizes the password reset process by setting a new password.
-    """
-    try:
-        await finalize_password_reset(
-            session, 
-            payload.email, 
-            payload.otp, 
-            payload.new_password
-        )
-        return {"message": "Password updated successfully"}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 # -------------------------------------------------------------------
@@ -219,6 +227,10 @@ async def update_user_endpoint(
     # Staff must always have department
     if data.role == UserRole.Staff and not data.department_id:
         raise HTTPException(400, detail="department_id is required for Staff users")
+    
+    # Dean must always have school
+    if data.role == UserRole.Dean and not data.school_id:
+        raise HTTPException(400, detail="school_id is required for Dean users")
 
     try:
         return await update_user(

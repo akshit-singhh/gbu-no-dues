@@ -3,7 +3,7 @@
 from typing import AsyncGenerator
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError
+import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token
@@ -37,52 +37,67 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
+        # Decode token (Will raise PyJWT errors if invalid/expired)
         payload = decode_token(token)
         user_id = payload.get("sub")
 
         if not user_id:
-            raise HTTPException(401, "Invalid token payload")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload: missing subject",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-    except JWTError:
-        raise HTTPException(401, "Could not validate credentials")
+    except jwt.ExpiredSignatureError:
+        # --- CATCH EXPIRED TOKEN ---
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired. Please login again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidTokenError:
+        # --- CATCH INVALID TOKEN ---
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        # --- CATCH EVERYTHING ELSE ---
+        print(f"Auth Error: {str(e)}") # Debug log
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Fetch user by ID
     user = await get_user_by_id(session, user_id)
 
     if not user:
-        raise HTTPException(401, "User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return user
 
 
 # ------------------------------------------------------------
-# Role-based access control (CASE-SAFE, enum-safe)
+# Role-based access control
 # ------------------------------------------------------------
 def role_required(*allowed_roles: UserRole):
-    """
-    Enforces that the current user has one of the allowed roles.
-    Works with enum values and displays proper role in error messages.
-    """
-
-    # Helper to normalize enum or string to lowercase
     def normalize_role(role):
         if isinstance(role, UserRole):
             return role.value.strip().lower()
         return str(role).strip().lower()
 
-    # Normalize allowed roles
     normalized_allowed = set(normalize_role(r) for r in allowed_roles)
 
     async def checker(current_user: User = Depends(get_current_user)):
-
-        # Normalize the user's role from DB
         user_role_normalized = normalize_role(current_user.role)
 
-        # Optional Admin bypass: uncomment if Admin should always have access
-        # if user_role_normalized == "admin":
-        #     return current_user
-
-        # Check allowed roles
         if user_role_normalized not in normalized_allowed:
             raise HTTPException(
                 status_code=403,
@@ -99,6 +114,6 @@ def role_required(*allowed_roles: UserRole):
 # ------------------------------------------------------------
 
 require_super_admin = role_required(UserRole.Admin)
-require_hod = role_required(UserRole.HOD)
+require_dean = role_required(UserRole.Dean)
 require_staff = role_required(UserRole.Staff)
 require_student = role_required(UserRole.Student)

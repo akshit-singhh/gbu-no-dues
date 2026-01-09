@@ -19,14 +19,14 @@ class LoginRequest(BaseModel):
 
 # -------------------------------------------------------------------
 # REGISTER REQUEST  
-# (Admin creates: HOD / Staff / Student)
 # -------------------------------------------------------------------
 class RegisterRequest(BaseModel):
     name: str
     email: EmailStr
     password: str
-    role: UserRole                  # Admin / HOD / Staff / Student
-    department_id: Optional[int] = None   # REQUIRED for Staff & HOD
+    role: UserRole
+    department_id: Optional[int] = None   
+    school_id: Optional[int] = None       
 
     class Config:
         json_schema_extra = {
@@ -39,18 +39,11 @@ class RegisterRequest(BaseModel):
                     "department_id": 3
                 },
                 {
-                    "name": "HOD User",
-                    "email": "hod@example.com",
+                    "name": "Dean User",
+                    "email": "dean@example.com",
                     "password": "password123",
-                    "role": "HOD",
-                    "department_id": 1
-                },
-                {
-                    "name": "Student User",
-                    "email": "student@example.com",
-                    "password": "password123",
-                    "role": "Student"
-                    # Student does NOT need department_id
+                    "role": "Dean",
+                    "school_id": 1
                 }
             ]
         }
@@ -66,16 +59,18 @@ class Token(BaseModel):
 
 
 # -------------------------------------------------------------------
-# TOKEN + USER DETAILS (Used for login response)
+# TOKEN + USER DETAILS (Updated)
 # -------------------------------------------------------------------
-class TokenWithUser(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: Optional[int] = None
-    user: UserRead
-
-    # attach department name explicitly
+class TokenWithUser(Token):
+    user_name: str
+    user_role: str
+    user_id: UUID
+    
+    # Extra Context Fields
+    department_id: Optional[int] = None
     department_name: Optional[str] = None
+    school_id: Optional[int] = None
+    school_name: Optional[str] = None
 
 
 # -------------------------------------------------------------------
@@ -103,18 +98,23 @@ class StudentLoginResponse(BaseModel):
 # -------------------------------------------------------------------
 # FORGOT PASSWORD SCHEMAS
 # -------------------------------------------------------------------
-
 class ForgotPasswordRequest(BaseModel):
-    """Request to initiate password reset by sending an OTP."""
     email: EmailStr
 
 class VerifyOTPRequest(BaseModel):
-    """Request to verify the 6-digit OTP sent to email."""
     email: EmailStr
     otp: str
 
 class ResetPasswordRequest(BaseModel):
-    """Request to set a new password after successful OTP verification."""
     email: EmailStr
     otp: str
     new_password: str
+
+# -------------------------------------------------------------------
+# ADMIN CREATION SCHEMAS (Schools & Departments)
+# -------------------------------------------------------------------
+class SchoolCreateRequest(BaseModel):
+    name: str
+
+class DepartmentCreateRequest(BaseModel):
+    name: str

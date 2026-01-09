@@ -1,5 +1,5 @@
 # app/schemas/student.py
-from pydantic import BaseModel, EmailStr, field_validator, ValidationInfo
+from pydantic import BaseModel, EmailStr, field_validator, ValidationInfo, ConfigDict
 from typing import Optional
 from uuid import UUID
 from datetime import date, datetime
@@ -13,55 +13,58 @@ class StudentRegister(BaseModel):
     full_name: str
     mobile_number: str
     email: EmailStr
+    
+    # Linked to School
+    school_id: int
 
     password: str
     confirm_password: Optional[str] = None
 
     @field_validator("confirm_password")
-    def passwords_match(cls, v, info: ValidationInfo):
-        """
-        Tests do NOT send confirm_password.
-        So we auto-fill it with password so validation passes.
-        """
-        # FIX: Access the dictionary via info.data
+    @classmethod
+    def passwords_match(cls, v: Optional[str], info: ValidationInfo) -> str:
         password = info.data.get("password")
-
-        # If confirm_password missing → auto-fill
         if v is None:
-            return password
-
+            return password if password else ""
         if password and v != password:
             raise ValueError("Passwords do not match")
-
         return v
 
 
 # ------------------------------------------------------------
-# STUDENT UPDATE (Filled during application submission)
+# STUDENT UPDATE (For PATCH /api/students/me)
 # ------------------------------------------------------------
 class StudentUpdate(BaseModel):
-    full_name: Optional[str]
-    father_name: Optional[str]
-    mother_name: Optional[str]
-    gender: Optional[str]
-    category: Optional[str]
-    dob: Optional[date]
+    full_name: Optional[str] = None
+    mobile_number: Optional[str] = None  # ✅ Added this so they can update phone
+    email: Optional[EmailStr] = None     # ✅ Added this so they can update email
+    
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
+    gender: Optional[str] = None
+    category: Optional[str] = None
+    dob: Optional[date] = None
 
-    permanent_address: Optional[str]
-    domicile: Optional[str]
-    is_hosteller: Optional[bool]
-    hostel_name: Optional[str]
-    hostel_room: Optional[str]
+    permanent_address: Optional[str] = None
+    domicile: Optional[str] = None
+    
+    # Hostel Details
+    is_hosteller: Optional[bool] = None
+    hostel_name: Optional[str] = None
+    hostel_room: Optional[str] = None
 
-    department_id: Optional[int]
-    section: Optional[str]
-    batch: Optional[str]
-    admission_year: Optional[int]
-    admission_type: Optional[str]
+    # Academic Details
+    school_id: Optional[int] = None
+    section: Optional[str] = None
+    batch: Optional[str] = None
+    admission_year: Optional[int] = None
+    admission_type: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ------------------------------------------------------------
-# FULL STUDENT READ RESPONSE (Used everywhere in API responses)
+# FULL STUDENT READ RESPONSE
 # ------------------------------------------------------------
 class StudentRead(BaseModel):
     id: UUID
@@ -72,25 +75,24 @@ class StudentRead(BaseModel):
     mobile_number: str
     email: EmailStr
 
-    father_name: Optional[str]
-    mother_name: Optional[str]
-    gender: Optional[str]
-    category: Optional[str]
-    dob: Optional[date]
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
+    gender: Optional[str] = None
+    category: Optional[str] = None
+    dob: Optional[date] = None
 
-    permanent_address: Optional[str]
-    domicile: Optional[str]
-    is_hosteller: Optional[bool]
-    hostel_name: Optional[str]
-    hostel_room: Optional[str]
+    permanent_address: Optional[str] = None
+    domicile: Optional[str] = None
+    is_hosteller: Optional[bool] = None
+    hostel_name: Optional[str] = None
+    hostel_room: Optional[str] = None
 
-    department_id: Optional[int]
-    section: Optional[str]
-    batch: Optional[str]
-    admission_year: Optional[int]
-    admission_type: Optional[str]
+    school_id: Optional[int] = None
+    section: Optional[str] = None
+    batch: Optional[str] = None
+    admission_year: Optional[int] = None
+    admission_type: Optional[str] = None
 
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

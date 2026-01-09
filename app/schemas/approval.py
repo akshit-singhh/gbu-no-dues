@@ -1,19 +1,39 @@
-from pydantic import BaseModel
+# app/schemas/approval.py
+
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 from typing import Optional
+from datetime import datetime
 
+# ----------------------------------------------------------------
+# REQUEST (Input from User)
+# ----------------------------------------------------------------
 class StageActionRequest(BaseModel):
     remarks: Optional[str] = None
 
 
+# ----------------------------------------------------------------
+# RESPONSE (Output to User)
+# ----------------------------------------------------------------
 class StageActionResponse(BaseModel):
     id: UUID
     application_id: UUID
-    department_id: int
+    
+    # (It will be None for Library, Hostel, Sports, etc.)
+    department_id: Optional[int] = None
+    
+    verifier_role: str
     status: str
-    remarks: Optional[str]
-    reviewer_id: Optional[UUID]
+    
+    comments: Optional[str] = None
+    
+    verified_by: Optional[UUID] = None
+    
+    verified_at: Optional[datetime] = None
+    
+    sequence_order: int
+    created_at: datetime
+    updated_at: datetime
 
-    class Config:
-        from_attributes = True
-        extra = "ignore"
+    # Pydantic V2 Configuration
+    model_config = ConfigDict(from_attributes=True)
