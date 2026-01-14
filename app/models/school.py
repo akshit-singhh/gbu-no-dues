@@ -4,6 +4,8 @@ from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, Integer, String
 from typing import Optional, List, TYPE_CHECKING
 
+from supabase_auth import User
+
 # Prevent circular imports
 if TYPE_CHECKING:
     from app.models.student import Student
@@ -24,7 +26,7 @@ class School(SQLModel, table=True):
         default=None,
         sa_column=Column(String, unique=True, nullable=True)
     )
-
+    users: List["User"] = Relationship(back_populates="school")
     # --------------------------------------------------------
     # RELATIONSHIPS
     # --------------------------------------------------------

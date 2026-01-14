@@ -6,10 +6,19 @@ from typing import Optional
 from datetime import datetime
 
 # ----------------------------------------------------------------
-# REQUEST (Input from User)
+# REQUEST: Standard Action (Approve/Reject by User)
 # ----------------------------------------------------------------
 class StageActionRequest(BaseModel):
     remarks: Optional[str] = None
+
+
+# ----------------------------------------------------------------
+# REQUEST: Admin Override (Force Action)
+# ----------------------------------------------------------------
+class AdminOverrideRequest(BaseModel):
+    stage_id: UUID
+    action: str  # Must be "approve" or "reject"
+    remarks: Optional[str] = "Admin Override"
 
 
 # ----------------------------------------------------------------

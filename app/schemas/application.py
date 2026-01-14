@@ -56,7 +56,37 @@ class ApplicationCreate(BaseModel):
 
 
 # ============================================================
-# 3. STUDENT UPDATE (PATCH) -> NESTED Structure
+# 3. APPLICATION RESUBMIT (PATCH)
+#    - Allows fixing Proof, Remarks, AND Student Profile Typos
+# ============================================================
+class ApplicationResubmit(BaseModel):
+    # Application fixes
+    remarks: Optional[str] = None
+    proof_document_url: Optional[str] = None 
+
+    # Profile fixes (Optional)
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
+    gender: Optional[str] = None
+    category: Optional[str] = None
+    dob: Optional[date] = None
+    permanent_address: Optional[str] = None
+    domicile: Optional[str] = None
+    
+    # Hostel fixes (Common reason for rejection)
+    is_hosteller: Optional[bool] = None
+    hostel_name: Optional[str] = None
+    hostel_room: Optional[str] = None
+
+    # Academic fixes
+    section: Optional[str] = None
+    batch: Optional[str] = None
+    admission_year: Optional[int] = None
+    admission_type: Optional[str] = None
+
+
+# ============================================================
+# 4. STUDENT UPDATE (PATCH) -> NESTED Structure
 # ============================================================
 # A. The inner data (Just the personal edits)
 class StudentUpdateData(StudentBase):
@@ -68,10 +98,11 @@ class StudentUpdateWrapper(BaseModel):
 
 
 # ============================================================
-# 4. APPLICATION READ (Admin / Status)
+# 5. APPLICATION READ (Admin / Status)
 # ============================================================
 class ApplicationRead(BaseModel):
     id: UUID
+    display_id: Optional[str] = None
     student_id: UUID
     status: str
     

@@ -11,6 +11,7 @@ import time
 import psutil
 import uuid
 import os
+import socket
 
 # Core modules
 from app.core.database import test_connection, init_db, AsyncSessionLocal
@@ -29,6 +30,7 @@ from app.api.endpoints import (
     auth_student as auth_student_router,
     approvals as approvals_router,
     verification as verification_router,
+    captcha as captcha_router,  # <--- Added Captcha Router
 )
 
 # ------------------------------------------------------------
@@ -131,7 +133,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ------------------------------------------------------------
 # STATIC FILES & FAVICON
 # ------------------------------------------------------------
-# This prevents "RuntimeError: Directory does not exist" on fresh installs
 os.makedirs("app/static", exist_ok=True)
 os.makedirs("app/static/certificates", exist_ok=True)
 
@@ -139,7 +140,6 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    # Only return if file exists to avoid 500 error logs
     if os.path.exists("app/static/favicon.ico"):
         return FileResponse("app/static/favicon.ico")
     return JSONResponse({"detail": "No favicon"}, status_code=404)
@@ -151,7 +151,7 @@ async def status_page():
     return JSONResponse({"status": "running"}, status_code=200)
 
 # ------------------------------------------------------------
-# METRICS API (PgBouncer-safe)
+# METRICS API (Updated with SMTP Check)
 # ------------------------------------------------------------
 @app.get("/api/metrics", tags=["System"])
 async def metrics():
@@ -164,9 +164,9 @@ async def metrics():
     except Exception:
         disk_usage = 0
 
+    # 1. Database Check
     db_latency = 0
     db_status = "Disconnected"
-
     try:
         start = time.time()
         await test_connection()
@@ -174,6 +174,19 @@ async def metrics():
         db_status = "Connected"
     except Exception:
         db_status = "Error"
+
+    # 2.SMTP Server Check
+    smtp_status = "Disconnected"
+    try:
+        if settings.SMTP_HOST:
+            # Try to connect to the SMTP port (timeout 2s)
+            sock = socket.create_connection((settings.SMTP_HOST, settings.SMTP_PORT), timeout=2)
+            sock.close()
+            smtp_status = "Connected"
+        else:
+            smtp_status = "Not Configured"
+    except Exception:
+        smtp_status = "Error"
 
     return {
         "status": "Online",
@@ -184,21 +197,26 @@ async def metrics():
         "disk": disk_usage,
         "database": db_status,
         "db_latency_ms": db_latency,
+        "smtp_server": smtp_status,
         "db_pool": "Managed by Supabase PgBouncer",
     }
 
 # ------------------------------------------------------------
-# CORS CONFIGURATION
+# CORS CONFIGURATION (FIXED FOR CAPTCHA & LOCAL NETWORK)
 # ------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://your-frontend-domain.com",
-    ],
+    # This Regex allows:
+    # - localhost
+    # - 127.0.0.1
+    # - 192.168.x.x
+    # - 10.x.x.x
+    # - 100.x.x.x (Tailscale/Private Networks)
+    # - Any port number
+    allow_origin_regex=r"http://(?:localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}|100\.\d{1,3}\.\d{1,3})(?::\d+)?",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ------------------------------------------------------------
@@ -212,7 +230,9 @@ app.include_router(auth_student_router.router)
 app.include_router(applications_router.router)
 app.include_router(approvals_router.router)
 app.include_router(verification_router.router)
+app.include_router(captcha_router.router)  # <--- Registered Captcha
 app.include_router(utils.router)
+
 # ------------------------------------------------------------
 # ROOT HEALTH CHECK
 # ------------------------------------------------------------

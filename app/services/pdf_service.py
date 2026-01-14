@@ -1,8 +1,11 @@
 # app/services/pdf_service.py
 
 import os
-import pdfkit
+import io
 import uuid
+import base64
+import pdfkit
+import qrcode
 from datetime import datetime
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,163 +20,191 @@ from app.models.user import User
 from app.models.certificate import Certificate
 
 # -----------------------------
-# CONFIGURATION
+# PATH CONFIGURATION
 # -----------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
-STATIC_CERT_DIR = os.path.join(BASE_DIR, 'static', 'certificates')
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+CERT_DIR = os.path.join(STATIC_DIR, "certificates")
 
-# Ensure directories exist
-os.makedirs(STATIC_CERT_DIR, exist_ok=True)
+os.makedirs(CERT_DIR, exist_ok=True)
 
-# Jinja2 Setup
-template_env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
+# -----------------------------
+# JINJA2 SETUP
+# -----------------------------
+template_env = Environment(
+    loader=FileSystemLoader(TEMPLATE_DIR),
+    autoescape=True
+)
 
-# PDFKit Configuration
-# ⚠️ IMPORTANT: Update this path to where wkhtmltopdf is installed on your machine
-# Windows Example: r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
-# Linux/Docker Example: "/usr/bin/wkhtmltopdf"
-if os.name == 'nt':
-    WKHTMLTOPDF_PATH = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe" 
+# -----------------------------
+# WKHTMLTOPDF CONFIG
+# -----------------------------
+if os.name == "nt":
+    WKHTMLTOPDF_PATH = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
 else:
-    WKHTMLTOPDF_PATH = '/usr/bin/wkhtmltopdf'
+    WKHTMLTOPDF_PATH = "/usr/bin/wkhtmltopdf"
 
 config = pdfkit.configuration(wkhtmltopdf=WKHTMLTOPDF_PATH)
 
 options = {
-    'page-size': 'A4',
-    'margin-top': '15mm',
-    'margin-right': '15mm',
-    'margin-bottom': '15mm',
-    'margin-left': '15mm',
-    'encoding': "UTF-8",
-    'no-outline': None,
-    'enable-local-file-access': None,
-    'disable-smart-shrinking': None
+    "page-size": "A4",
+    "margin-top": "15mm",
+    "margin-right": "15mm",
+    "margin-bottom": "15mm",
+    "margin-left": "15mm",
+    "encoding": "UTF-8",
+    "dpi": 300,
+    "zoom": 1,
+    "disable-smart-shrinking": None,
+    "print-media-type": None,
+    "enable-local-file-access": None,
+    "no-outline": None
 }
 
+# -----------------------------
+# HELPER: Encode Image to Base64
+# -----------------------------
+def image_to_base64(path: str) -> str:
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    return encoded
 
 # -----------------------------
-# MAIN GENERATION FUNCTION
+# MAIN FUNCTION
 # -----------------------------
 async def generate_certificate_pdf(
-    session: AsyncSession, 
-    application_id: uuid.UUID, 
+    session: AsyncSession,
+    application_id: uuid.UUID,
     generated_by_id: uuid.UUID | None = None
 ) -> bytes:
     """
-    Generates a PDF using the 'certificate_template.html' and wkhtmltopdf.
+    Generates a PDF certificate using wkhtmltopdf with embedded logo and QR.
+    No local QR or logo files are required.
     """
 
-    # 1. Fetch Application & Student
-    result = await session.execute(select(Application).where(Application.id == application_id))
-    application = result.scalar_one()
+    # -----------------------------
+    # FETCH APPLICATION & STUDENT
+    # -----------------------------
+    application = (
+        await session.execute(
+            select(Application).where(Application.id == application_id)
+        )
+    ).scalar_one()
 
-    student_res = await session.execute(select(Student).where(Student.id == application.student_id))
-    student = student_res.scalar_one()
+    student = (
+        await session.execute(
+            select(Student).where(Student.id == application.student_id)
+        )
+    ).scalar_one()
 
-    # 2. Fetch Stages (with Join for Department & Reviewer Names)
-    #    We need this to populate the "Clearance Status" table in your HTML
-    query = (
+    # -----------------------------
+    # FETCH STAGES
+    # -----------------------------
+    stages_query = (
         select(ApplicationStage, Department.name, User.name)
         .outerjoin(Department, ApplicationStage.department_id == Department.id)
         .outerjoin(User, ApplicationStage.verified_by == User.id)
         .where(ApplicationStage.application_id == application.id)
         .order_by(ApplicationStage.sequence_order)
     )
-    
-    stages_res = await session.execute(query)
-    raw_stages = stages_res.all()
 
-    # 3. Transform Stages Data for Jinja Template
-    #    Your HTML expects: department_name, status, reviewer_name, reviewed_at
+    stages_raw = (await session.execute(stages_query)).all()
+
     formatted_stages = []
-    for stage, dept_name, reviewer_name in raw_stages:
-        # Determine Display Name (Department Name OR Role Name)
-        display_name = dept_name if dept_name else stage.verifier_role.replace("_", " ").title()
-        
-        # Format Date
-        date_str = stage.verified_at.strftime("%d-%m-%Y") if stage.verified_at else "-"
-        
-        # Handle "Approved" vs "Pending" styling logic
-        status_text = "Approved" if stage.status == "approved" else "Pending"
-
+    for stage, dept_name, reviewer_name in stages_raw:
         formatted_stages.append({
-            "department_name": display_name,
-            "status": status_text,
-            "reviewer_name": reviewer_name if reviewer_name else "System",
-            "reviewed_at": date_str
+            "department_name": dept_name or stage.verifier_role.replace("_", " ").title(),
+            "status": "Approved" if stage.status == "approved" else "Pending",
+            "reviewer_name": reviewer_name or "System",
+            "reviewed_at": stage.verified_at.strftime("%d-%m-%Y") if stage.verified_at else "-"
         })
 
-    # 4. Handle Certificate ID (Get Existing or Create New)
-    cert_query = await session.execute(select(Certificate).where(Certificate.application_id == application.id))
-    existing_cert = cert_query.scalar_one_or_none()
+    # -----------------------------
+    # CERTIFICATE ID
+    # -----------------------------
+    cert = (
+        await session.execute(
+            select(Certificate).where(Certificate.application_id == application.id)
+        )
+    ).scalar_one_or_none()
 
-    if existing_cert:
-        cert_uuid = existing_cert.id
-        readable_id = existing_cert.certificate_number
-        if not readable_id:
-            # Generate one if missing (format: GBU-ND-YYYY-XXXXX)
-            suffix = str(uuid.uuid4().hex)[:5].upper()
-            readable_id = f"GBU-ND-{datetime.now().year}-{suffix}"
+    if cert:
+        readable_id = cert.certificate_number
     else:
-        cert_uuid = uuid.uuid4()
-        suffix = str(uuid.uuid4().hex)[:5].upper()
+        suffix = uuid.uuid4().hex[:5].upper()
         readable_id = f"GBU-ND-{datetime.now().year}-{suffix}"
 
-    # 5. Prepare Context for HTML
-    #    These variables map directly to the {{ variables }} in your HTML
-    generation_date = datetime.now().strftime("%d-%m-%Y")
-    certificate_url = f"{settings.FRONTEND_URL}/verify/{readable_id}" # QR Code Link
+    # -----------------------------
+    # QR CODE (IN-MEMORY)
+    # -----------------------------
+    certificate_url = f"{settings.FRONTEND_URL}/verify/{readable_id}"
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(certificate_url)
+    qr.make(fit=True)
 
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    qr_buffer = io.BytesIO()
+    qr_image.save(qr_buffer, format="PNG")
+    qr_base64 = base64.b64encode(qr_buffer.getvalue()).decode()
+
+    # -----------------------------
+    # LOGO (IN-MEMORY)
+    # -----------------------------
+    logo_path = os.path.join(STATIC_DIR, "images", "gbu_logo.png")
+    logo_base64 = image_to_base64(logo_path)
+
+    # -----------------------------
+    # TEMPLATE CONTEXT
+    # -----------------------------
     context = {
         "student": student,
         "stages": formatted_stages,
         "certificate_id": readable_id,
-        "generation_date": generation_date,
-        "certificate_url": certificate_url
+        "generation_date": datetime.now().strftime("%d-%m-%Y"),
+        "certificate_url": certificate_url,
+        "qr_base64": qr_base64,
+        "logo_base64": logo_base64
     }
 
-    # 6. Render HTML
-    try:
-        template = template_env.get_template("pdf/certificate_template.html")
-        html_content = template.render(context)
-    except Exception as e:
-        raise ValueError(f"Template rendering failed. Check 'certificate_template.html'. Error: {e}")
+    # -----------------------------
+    # RENDER HTML
+    # -----------------------------
+    html = template_env.get_template("pdf/certificate_template.html").render(context)
 
-    # 7. Generate PDF
-    try:
-        pdf_bytes = pdfkit.from_string(html_content, False, configuration=config, options=options)
-    except OSError as e:
-        # Common error if wkhtmltopdf is not found in path
-        raise RuntimeError(f"wkhtmltopdf failed. Is the path correct? {WKHTMLTOPDF_PATH}. Error: {e}")
+    # -----------------------------
+    # GENERATE PDF
+    # -----------------------------
+    pdf_bytes = pdfkit.from_string(html, False, configuration=config, options=options)
 
-    # 8. Save to Disk
-    filename = f"certificate_{application.id}.pdf"
-    file_path = os.path.join(STATIC_CERT_DIR, filename)
-    file_url = f"/static/certificates/{filename}"
-
-    with open(file_path, "wb") as f:
+    # -----------------------------
+    # SAVE PDF (OPTIONAL)
+    # -----------------------------
+    pdf_name = f"certificate_{application.id}.pdf"
+    pdf_path = os.path.join(CERT_DIR, pdf_name)
+    with open(pdf_path, "wb") as f:
         f.write(pdf_bytes)
 
-    # 9. Update Database Record
-    if existing_cert:
-        existing_cert.pdf_url = file_url
-        existing_cert.generated_at = datetime.utcnow()
-        existing_cert.certificate_number = readable_id
-        if generated_by_id:
-            existing_cert.generated_by = generated_by_id
-        session.add(existing_cert)
+    pdf_url = f"/static/certificates/{pdf_name}"
+
+    # -----------------------------
+    # SAVE DB RECORD
+    # -----------------------------
+    if cert:
+        cert.pdf_url = pdf_url
+        cert.generated_at = datetime.utcnow()
+        cert.certificate_number = readable_id
+        cert.generated_by = generated_by_id
+        session.add(cert)
     else:
-        new_cert = Certificate(
-            id=cert_uuid,
+        session.add(Certificate(
+            id=uuid.uuid4(),
             application_id=application.id,
-            generated_by=generated_by_id,
-            pdf_url=file_url,
             certificate_number=readable_id,
-            generated_at=datetime.utcnow()
-        )
-        session.add(new_cert)
+            pdf_url=pdf_url,
+            generated_at=datetime.utcnow(),
+            generated_by=generated_by_id
+        ))
 
     await session.commit()
     return pdf_bytes

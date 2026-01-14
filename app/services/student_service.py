@@ -88,7 +88,6 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
 # ------------------------------------------------------------
 # UPDATE STUDENT PROFILE (GENERAL UPDATE)
 # ------------------------------------------------------------
-# ✅ RENAMED: from update_student_for_application
 async def update_student_profile(
     session: AsyncSession, 
     student_id: uuid.UUID, 

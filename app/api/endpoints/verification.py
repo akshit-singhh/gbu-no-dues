@@ -113,7 +113,10 @@ async def verify_certificate(
         "request": request,
         "valid": True,
         "student": student,
-        "application": application,
+        
+        # Pass Application (template can now use application.display_id)
+        "application": application, 
+        
         "certificate": certificate,
         "generation_date": certificate.generated_at.strftime("%d %B, %Y")
     })

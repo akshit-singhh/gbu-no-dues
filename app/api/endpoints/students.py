@@ -2,9 +2,11 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+import hashlib
 
 from app.api.deps import get_db_session
 from app.core.rbac import AllowRoles
+from app.core.config import settings
 from app.models.user import User, UserRole
 from app.schemas.student import StudentRegister, StudentRead, StudentUpdate
 
@@ -20,15 +22,45 @@ router = APIRouter(
     tags=["Students"]
 )
 
+# ----------------------------------------------------------------
+# HELPER: Verify Captcha (Hash-based)
+# ----------------------------------------------------------------
+def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
+    if not user_input or not hash_from_frontend:
+        return False
+    
+    # Normalize input and recreate the hash using the App Secret
+    normalized = user_input.strip().upper()
+    raw_str = f"{normalized}{settings.SECRET_KEY}"
+    calculated_hash = hashlib.sha256(raw_str.encode()).hexdigest()
+    
+    return calculated_hash == hash_from_frontend
+
 # ------------------------------------------------------------
-# STUDENT SELF-REGISTRATION (PUBLIC)
+# STUDENT SELF-REGISTRATION (PUBLIC) - [FIXED]
 # ------------------------------------------------------------
 @router.post("/register", response_model=StudentRead, status_code=status.HTTP_201_CREATED)
 async def register_student(
     data: StudentRegister,
     background_tasks: BackgroundTasks,
+    # REMOVED: captcha_hash: Optional[str] = Cookie(None) 
+    # REASON: We now use data.captcha_hash from the body
     session: AsyncSession = Depends(get_db_session),
 ):
+    # 1. CAPTCHA Verification (Using Hash from Body)
+    if not data.captcha_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="CAPTCHA hash missing. Please refresh the page."
+        )
+    
+    if not verify_captcha_hash(data.captcha_input, data.captcha_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Invalid CAPTCHA code."
+        )
+
+    # 2. Registration Logic
     try:
         student = await register_student_and_user(session, data)
         

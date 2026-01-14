@@ -190,7 +190,7 @@ body {
 
 <!-- =================== HEADER =================== -->
 <div class="header">
-    <img src="https://www.gbu.ac.in/Content/img/logo_gbu.png">
+    <img src="data:image/png;base64,{{ logo_base64 }}" alt="University Logo">
     <div class="university-name">Gautam Buddha University</div>
     <div class="university-sub">Greater Noida, Uttar Pradesh, India</div>
     <div class="doc-title">No Dues Certificate</div>
@@ -299,8 +299,7 @@ body {
 
     <div class="summary-right">
         <div class="qr-frame">
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data={{ certificate_url }}"
-                 width="80" height="80">
+            <img src="data:image/png;base64,{{ qr_base64 }}" width="80" height="80" alt="QR Code">
         </div>
         <div class="qr-note">Scan to Verify</div>
     </div>

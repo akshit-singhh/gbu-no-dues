@@ -1,6 +1,7 @@
 # app/services/application_service.py
 
 from sqlmodel import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 import uuid
@@ -10,35 +11,27 @@ from typing import Optional
 from app.models.application import Application, ApplicationStatus
 from app.models.application_stage import ApplicationStage
 from app.models.student import Student
-from app.models.department import Department  # ✅ Import Department
+from app.models.department import Department
 from app.models.user import UserRole
 from app.schemas.application import ApplicationCreate
+from app.core.config import settings
 
 # ---------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------
 
-# ✅ FIXED: Names now match your 'departments' table exactly
 DEFAULT_STAGES = [
     # Dean is special (linked to School, not Department table)
     {"role": UserRole.Dean,     "order": 1, "name": "School Dean"}, 
     
-    # Matches DB name "Library"
+    # Parallel Stages (Order 2)
     {"role": UserRole.Library,  "order": 2, "name": "Library"},
-    
-    # Matches DB name "Hostel"
     {"role": UserRole.Hostel,   "order": 2, "name": "Hostel"},
-    
-    # Matches DB name "Sports"
     {"role": UserRole.Sports,   "order": 2, "name": "Sports"},
-    
-    # Matches DB name "Laboratories"
     {"role": UserRole.Lab,      "order": 2, "name": "Laboratories"},
-    
-    # Matches DB name "CRC"
     {"role": UserRole.CRC,      "order": 2, "name": "CRC"},
     
-    # Matches DB name "Accounts"
+    # Final Stage (Order 3)
     {"role": UserRole.Account,  "order": 3, "name": "Accounts"}
 ]
 
@@ -48,13 +41,20 @@ async def create_application_for_student(
     payload: ApplicationCreate
 ) -> Application:
 
-    # 1. Fetch Student & Departments (✅ NEW LOGIC)
-    student_res = await session.execute(select(Student).where(Student.id == student_id))
+    # 1. Fetch Student, School & Departments
+    # We use selectinload to fetch the School relationship efficiently
+    stmt = (
+        select(Student)
+        .where(Student.id == student_id)
+        .options(selectinload(Student.school))
+    )
+    student_res = await session.execute(stmt)
     student = student_res.scalar_one_or_none()
+    
     if not student:
         raise ValueError("Student not found")
 
-    # ✅ Fetch all departments to create a lookup map
+    # Fetch all departments to create a lookup map
     # This creates a dictionary: { "library": 1, "hostel": 2, ... }
     dept_res = await session.execute(select(Department))
     all_depts = dept_res.scalars().all()
@@ -115,18 +115,26 @@ async def create_application_for_student(
     session.add(app)
     await session.flush() 
 
-    # 5. Generate Stages (✅ UPDATED LOGIC)
+    # 5. Generate Stages (With Dynamic Logic)
     for stage_info in DEFAULT_STAGES:
+        role = stage_info["role"]
         
-        # Skip Hostel if not hosteller
-        if stage_info["role"] == UserRole.Hostel and not student.is_hosteller:
+        #  RULE 1: Skip Hostel if not hosteller
+        if role == UserRole.Hostel and not student.is_hosteller:
             continue
+
+        #  RULE 2: Skip Lab if School is Exempt (e.g. Management/Law)
+        # We check the School Code (e.g. "SOM") against our Config Set
+        if role == UserRole.Lab:
+            if student.school and student.school.code in settings.SCHOOLS_WITHOUT_LABS:
+                # Skip creating this stage entirely
+                continue
 
         stage_school_id = None
         stage_dept_id = None 
 
         # Logic A: Dean uses School ID
-        if stage_info["role"] == UserRole.Dean:
+        if role == UserRole.Dean:
             stage_school_id = student.school_id
         
         # Logic B: Everyone else uses Department ID from the map
@@ -140,11 +148,11 @@ async def create_application_for_student(
         stage = ApplicationStage(
             id=uuid.uuid4(),
             application_id=app.id,
-            verifier_role=stage_info["role"].value if hasattr(stage_info["role"], "value") else stage_info["role"],
+            verifier_role=role.value if hasattr(role, "value") else role,
             sequence_order=stage_info["order"],
             status=ApplicationStatus.PENDING.value,
             
-            # ✅ NOW POPULATED CORRECTLY
+            # Populate Relationships
             school_id=stage_school_id, 
             department_id=stage_dept_id, 
             

@@ -1,6 +1,6 @@
 # app/schemas/auth.py
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from uuid import UUID
 
@@ -10,11 +10,23 @@ from app.schemas.student import StudentRead
 
 
 # -------------------------------------------------------------------
-# LOGIN REQUEST
+# LOGIN REQUEST (Admin/Staff/Dean) - [FIXED]
 # -------------------------------------------------------------------
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    captcha_input: str = Field(..., description="The 5-character code from the CAPTCHA image")
+    captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com",
+                "password": "password123",
+                "captcha_input": "....",
+                "captcha_hash": "...."
+            }
+        }
 
 
 # -------------------------------------------------------------------
@@ -26,7 +38,9 @@ class RegisterRequest(BaseModel):
     password: str
     role: UserRole
     department_id: Optional[int] = None   
-    school_id: Optional[int] = None       
+    school_id: Optional[int] = None
+    # Captcha is usually optional for internal admin registration
+    captcha_input: Optional[str] = Field(None, description="CAPTCHA code (optional for admin creation)")
 
     class Config:
         json_schema_extra = {
@@ -59,7 +73,7 @@ class Token(BaseModel):
 
 
 # -------------------------------------------------------------------
-# TOKEN + USER DETAILS (Updated)
+# TOKEN + USER DETAILS
 # -------------------------------------------------------------------
 class TokenWithUser(Token):
     user_name: str
@@ -79,6 +93,8 @@ class TokenWithUser(Token):
 class StudentLoginRequest(BaseModel):
     identifier: str
     password: str
+    captcha_input: str = Field(..., description="The 5-character code from the CAPTCHA image")
+    captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
 
 
 # -------------------------------------------------------------------
@@ -100,6 +116,7 @@ class StudentLoginResponse(BaseModel):
 # -------------------------------------------------------------------
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    captcha_input: Optional[str] = Field(None, description="CAPTCHA code")
 
 class VerifyOTPRequest(BaseModel):
     email: EmailStr
@@ -110,11 +127,14 @@ class ResetPasswordRequest(BaseModel):
     otp: str
     new_password: str
 
+
 # -------------------------------------------------------------------
 # ADMIN CREATION SCHEMAS (Schools & Departments)
 # -------------------------------------------------------------------
 class SchoolCreateRequest(BaseModel):
     name: str
-
+    code: str
+    
 class DepartmentCreateRequest(BaseModel):
     name: str
+    phase_number: int

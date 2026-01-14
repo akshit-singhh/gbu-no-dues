@@ -1,15 +1,18 @@
 # app/api/deps.py
 
 from typing import AsyncGenerator
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from app.core.security import decode_token
 from app.core.database import get_session
 from app.services.auth_service import get_user_by_id
 from app.models.user import User, UserRole
+from app.models.application import Application 
 
 
 # ------------------------------------------------------------
@@ -117,3 +120,45 @@ require_super_admin = role_required(UserRole.Admin)
 require_dean = role_required(UserRole.Dean)
 require_staff = role_required(UserRole.Staff)
 require_student = role_required(UserRole.Student)
+
+
+# =================================================================
+# SMART APPLICATION RESOLVER
+# =================================================================
+async def get_application_or_404(
+    application_id: str = Path(..., description="UUID or Display ID (e.g., ND235...)"),
+    session: AsyncSession = Depends(get_db_session)
+) -> Application:
+    """
+    Dependency that finds an application by EITHER:
+    1. UUID (Internal ID)
+    2. Display ID (Human Readable ID like ND235ICS066A7)
+    
+    Raises 404 immediately if not found.
+    """
+    
+    # 1. Check format
+    is_uuid = False
+    try:
+        uuid_obj = UUID(application_id)
+        is_uuid = True
+    except ValueError:
+        is_uuid = False
+    
+    # 2. Build Query
+    if is_uuid:
+        # Exact UUID Match (Fastest)
+        query = select(Application).where(Application.id == uuid_obj)
+    else:
+        # Smart Display ID Match (Case Insensitive)
+        # Allows 'nd235...' or 'ND235...'
+        query = select(Application).where(Application.display_id == application_id.upper())
+    
+    # 3. Execute
+    result = await session.execute(query)
+    app = result.scalar_one_or_none()
+    
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    return app

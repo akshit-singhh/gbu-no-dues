@@ -1,8 +1,12 @@
 # app/models/department.py
 
-from sqlmodel import SQLModel, Field
+from typing import Optional, List, TYPE_CHECKING
+from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, Integer, String
-from typing import Optional
+
+# Prevent circular imports
+if TYPE_CHECKING:
+    from app.models.user import User
 
 class Department(SQLModel, table=True):
     __tablename__ = "departments"
@@ -21,3 +25,6 @@ class Department(SQLModel, table=True):
         default=2,
         sa_column=Column(Integer, nullable=False, default=2)
     )
+
+    # This matches: department = Relationship(back_populates="users") in User model
+    users: List["User"] = Relationship(back_populates="department")

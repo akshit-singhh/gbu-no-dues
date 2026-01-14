@@ -19,6 +19,8 @@ class StudentRegister(BaseModel):
 
     password: str
     confirm_password: Optional[str] = None
+    captcha_input: str
+    captcha_hash: str
 
     @field_validator("confirm_password")
     @classmethod
@@ -36,8 +38,8 @@ class StudentRegister(BaseModel):
 # ------------------------------------------------------------
 class StudentUpdate(BaseModel):
     full_name: Optional[str] = None
-    mobile_number: Optional[str] = None  # ✅ Added this so they can update phone
-    email: Optional[EmailStr] = None     # ✅ Added this so they can update email
+    mobile_number: Optional[str] = None
+    email: Optional[EmailStr] = None
     
     father_name: Optional[str] = None
     mother_name: Optional[str] = None

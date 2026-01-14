@@ -12,6 +12,9 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 if TYPE_CHECKING:
     from app.models.student import Student
     from app.models.application_stage import ApplicationStage
+    # ✅ ADDED: Imports for relationships
+    from app.models.school import School
+    from app.models.department import Department
 
 class UserRole(str, Enum):
     # System Roles
@@ -24,7 +27,6 @@ class UserRole(str, Enum):
 
     # Specific Authority Roles (For No Dues Approvals)
     Dean = "dean"                # Dean of School
-    HOD = "hod"                  # Head of Department
     Library = "library"          # Library Staff
     Hostel = "hostel"            # Hostel Warden
     Lab = "lab"                  # Lab In-charge
@@ -63,7 +65,6 @@ class User(SQLModel, table=True):
     # --------------------------------------------------------
     #  PASSWORD RESET
     # --------------------------------------------------------
-    # These match the columns you added to your database
     otp_code: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     otp_expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
 
@@ -74,3 +75,9 @@ class User(SQLModel, table=True):
     
     # Optional: Relationship to stages verified by this user
     verified_stages: List["ApplicationStage"] = Relationship(back_populates="verifier")
+
+    # Ensure app/models/school.py has: users = Relationship(back_populates="school")
+    school: Optional["School"] = Relationship(back_populates="users")
+
+    # Ensure app/models/department.py has: users = Relationship(back_populates="department")
+    department: Optional["Department"] = Relationship(back_populates="users")

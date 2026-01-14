@@ -46,7 +46,7 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
 
 
 # ============================================================================
-# CREATE USER
+# CREATE USER (✅ FIXED - Eager Loads Relationships)
 # ============================================================================
 async def create_user(
     session: AsyncSession,
@@ -78,8 +78,24 @@ async def create_user(
 
     try:
         await session.commit()
-        await session.refresh(user)
-        return user
+        
+        # ✅ CRITICAL FIX: Refresh with Eager Load
+        # We must load relationships (school, department) NOW, while we are async.
+        # If we wait until Pydantic serialization (sync), it will crash with MissingGreenlet.
+        
+        stmt = (
+            select(User)
+            .options(
+                selectinload(User.school),
+                selectinload(User.department),
+                selectinload(User.student)
+            )
+            .where(User.id == user.id)
+        )
+        result = await session.execute(stmt)
+        refreshed_user = result.scalar_one()
+        
+        return refreshed_user
 
     except IntegrityError:
         await session.rollback()
@@ -338,6 +354,7 @@ async def update_user(
     email: str | None = None,
     role: UserRole | None = None,
     department_id: int | None = None,
+    school_id: int | None = None, # Ensure this argument is accepted!
 ) -> User:
 
     try:
@@ -345,12 +362,14 @@ async def update_user(
     except ValueError:
         raise ValueError("Invalid User ID")
 
+    # 1. Fetch User
     result = await session.execute(select(User).where(User.id == uuid_obj))
     user = result.scalar_one_or_none()
 
     if not user:
         raise ValueError("User not found")
 
+    # 2. Update Email (Check Duplicates)
     if email and email != user.email:
         dup = await session.execute(select(User).where(User.email == email))
         if dup.scalar_one_or_none():
@@ -358,19 +377,47 @@ async def update_user(
         user.email = email
 
     if name: user.name = name
+    if role: user.role = role
 
-    if role:
-        user.role = role
-
+    # 3. Handle Foreign Keys (The Fix handles 0 -> None)
+    
+    # Update Department ID
     if department_id is not None:
-        if hasattr(user, "department_id"):
+        # If frontend sends 0, treat it as None (remove department)
+        if department_id == 0:
+            user.department_id = None
+        else:
             user.department_id = department_id
 
+    # Update School ID (If passed in kwargs)
+    if school_id is not None:
+        if school_id == 0:
+            user.school_id = None
+        else:
+            user.school_id = school_id
+
+    # 4. Save & Return (With Eager Loading)
     try:
         await session.commit()
-        await session.refresh(user)
-        return user
+        
+        # Re-fetch with relationships to prevent MissingGreenlet error
+        stmt = (
+            select(User)
+            .options(
+                selectinload(User.school),
+                selectinload(User.department),
+                selectinload(User.student).selectinload(Student.school)
+            )
+            .where(User.id == user.id)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one()
 
-    except IntegrityError:
+    except IntegrityError as e:
         await session.rollback()
-        raise ValueError("Failed to update user")
+        # Log the real error for debugging
+        print(f"Update User Error: {str(e)}") 
+        # Check if it's a specific constraint
+        if "foreign key constraint" in str(e).lower():
+            raise ValueError("Invalid School ID or Department ID provided.")
+        raise ValueError("Failed to update user (Database Integrity Error)")

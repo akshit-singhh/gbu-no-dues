@@ -1,5 +1,6 @@
 # app/core/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Set
 
 class Settings(BaseSettings):
     DATABASE_URL: str
@@ -15,6 +16,11 @@ class Settings(BaseSettings):
     SUPER_ADMIN_NAME: str | None = "Super Admin"
     db_ca_cert_path: str | None = None
     ENV: str = "dev"  # "dev" or "prod"
+
+    # --- LOGIC CONFIGURATION ---
+    # Codes of Schools that do NOT require Lab Clearance.
+    # Using a Set for fast lookup (O(1)).
+    SCHOOLS_WITHOUT_LABS: Set[str] = {"SOL", "HSS"} 
 
     # --- EMAIL SETTINGS ---
     SMTP_HOST: str | None = None

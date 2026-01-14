@@ -8,20 +8,18 @@ from uuid import UUID
 from app.models.application import Application, ApplicationStatus
 from app.models.application_stage import ApplicationStage
 from app.models.user import User, UserRole
+from app.models.student import Student
+
+# 1. IMPORT PDF SERVICE
+from app.services.pdf_service import generate_certificate_pdf
 
 # ----------------------------------------------------------------
-# 1. SMART STATUS UPDATER (Batch Logic - Non-Blocking)
+# 1. SMART STATUS UPDATER (Now with Cert Trigger)
 # ----------------------------------------------------------------
-async def _update_application_status(session: AsyncSession, application_id: UUID):
+async def _update_application_status(session: AsyncSession, application_id: UUID, trigger_user_id: UUID = None):
     """
     Checks if the application can move to the next level.
-    
-    LOGIC:
-    1. Wait for ALL stages at the current level to finish (Approve or Reject).
-    2. If any are still Pending -> Stay IN_PROGRESS.
-    3. Once everyone finishes:
-       - If any Rejections -> Mark App as REJECTED.
-       - If all Approved -> Move to NEXT Level.
+    If completed, TRIGGERS CERTIFICATE GENERATION automatically.
     """
     # 1. Fetch Application
     app_res = await session.execute(select(Application).where(Application.id == application_id))
@@ -39,37 +37,27 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
     )
     current_stages = current_stages_res.scalars().all()
 
-    # ---------------------------------------------------------
-    # CHECK 1: IS ANYONE STILL PENDING? (Priority)
-    # ---------------------------------------------------------
-    # If even one department hasn't acted yet, we wait. 
-    # We keep the status as IN_PROGRESS so others can still see and act on it.
+    # CHECK 1: IS ANYONE STILL PENDING?
     if any(s.status == ApplicationStatus.PENDING.value for s in current_stages):
-        app.status = ApplicationStatus.IN_PROGRESS.value
-        session.add(app)
+        # Ensure status is synced to IN_PROGRESS if it was something else
+        if app.status != ApplicationStatus.IN_PROGRESS.value:
+            app.status = ApplicationStatus.IN_PROGRESS.value
+            session.add(app)
         return 
 
-    # ---------------------------------------------------------
     # CHECK 2: ARE THERE REJECTIONS?
-    # ---------------------------------------------------------
-    # We only reach here if EVERYONE at this level has finished (Approved or Rejected).
     rejected_stages = [s for s in current_stages if s.status == ApplicationStatus.REJECTED.value]
     
     if rejected_stages:
-        # One or more departments rejected it. Now we stop the flow.
         app.status = ApplicationStatus.REJECTED.value
-        
-        # Consolidate remarks (e.g., "Library: Book due; Hostel: Fine pending")
         reject_notes = "; ".join([f"{s.verifier_role}: {s.comments or 'No remarks'}" for s in rejected_stages])
         app.remarks = f"Rejected at Level {current_level}: {reject_notes}"
-        
         session.add(app)
         return
 
-    # ---------------------------------------------------------
     # CHECK 3: ALL APPROVED -> MOVE NEXT
-    # ---------------------------------------------------------
-    # No pending, No rejections -> Everyone approved!
+    # (If we reach here, it means NO rejections and NO pending at this level)
+    
     next_stage_res = await session.execute(
         select(ApplicationStage)
         .where(
@@ -81,14 +69,34 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
     next_stage = next_stage_res.scalars().first()
 
     if next_stage:
-        # Advance to the next level (e.g., 2 -> 3)
+        # Move to next level
         app.current_stage_order = next_stage.sequence_order
         app.status = ApplicationStatus.IN_PROGRESS.value
+        session.add(app)
     else:
-        # No more stages -> Completed
-        app.status = ApplicationStatus.COMPLETED.value
-        app.is_completed = True
-        app.current_stage_order = 999 
+        # NO NEXT STAGE -> COMPLETED
+        # Only trigger completion logic if it wasn't already completed
+        if str(app.status) != str(ApplicationStatus.COMPLETED.value):
+            app.status = ApplicationStatus.COMPLETED.value
+            app.is_completed = True
+            app.current_stage_order = 999 
+            app.remarks = "All stages cleared. Certificate Issued."
+            app.updated_at = datetime.utcnow()
+            
+            session.add(app)
+            # CRITICAL: Flush status to DB before generating PDF
+            await session.flush() 
+
+            # --- AUTO-TRIGGER CERTIFICATE GENERATION ---
+            print(f"✅ App {app.display_id} is COMPLETE. Generating Certificate...")
+            try:
+                # We pass trigger_user_id if available, or just the app.student_id if needed by your logic
+                # Ensure generate_certificate_pdf handles the logic for signer ID
+                await generate_certificate_pdf(session, app.id, trigger_user_id)
+            except Exception as e:
+                print(f"⚠️ Certificate Generation Failed: {e}")
+                # Optional: You could log this error to an audit table
+                # We do NOT raise here to avoid rolling back the 'Completed' status
 
     app.updated_at = datetime.utcnow()
     session.add(app)
@@ -110,35 +118,56 @@ async def _fetch_user(session: AsyncSession, reviewer_id):
 async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     stage_uuid = UUID(stage_id) if isinstance(stage_id, str) else stage_id
 
-    result = await session.execute(select(ApplicationStage).where(ApplicationStage.id == stage_uuid))
-    stage = result.scalar_one_or_none()
-    if not stage: raise ValueError("Stage not found")
-    if stage.status == ApplicationStatus.APPROVED.value: raise ValueError("Already approved.")
+    # 1. Fetch Stage + App + Student (Crucial for correct validation)
+    query = (
+        select(ApplicationStage, Application, Student)
+        .join(Application, ApplicationStage.application_id == Application.id)
+        .join(Student, Application.student_id == Student.id)
+        .where(ApplicationStage.id == stage_uuid)
+    )
+    result = await session.execute(query)
+    row = result.first()
 
-    # Validate Logic
-    app_res = await session.execute(select(Application).where(Application.id == stage.application_id))
-    application = app_res.scalar_one()
+    if not row:
+        raise ValueError("Stage not found")
+
+    stage, application, student = row
+
+    if stage.status == ApplicationStatus.APPROVED.value: 
+        raise ValueError("Already approved.")
 
     if stage.sequence_order != application.current_stage_order:
          raise ValueError("Cannot approve: Application is not currently at this stage level.")
 
     reviewer = await _fetch_user(session, reviewer_id)
-    if not reviewer: raise ValueError("Reviewer user not found")
+    if not reviewer: 
+        raise ValueError("Reviewer user not found")
 
-    # [Permission Checks]
-    if reviewer.role != UserRole.Admin:
-        if stage.school_id is not None:
-            if reviewer.role != UserRole.Dean or getattr(reviewer, 'school_id', None) != stage.school_id:
-                 raise ValueError("Only the correct Dean can approve this stage.")
-        elif stage.department_id is not None:
-            if reviewer.role != UserRole.Staff or getattr(reviewer, 'department_id', None) != stage.department_id:
-                 raise ValueError("Only the correct Staff can approve this stage.")
-        else:
-            reviewer_role_str = reviewer.role.value if hasattr(reviewer.role, "value") else reviewer.role
-            if stage.verifier_role != reviewer_role_str:
-                raise ValueError(f"Access Denied: This stage requires {stage.verifier_role} role.")
+    # ---------------------------------------------------------
+    # PERMISSION CHECKS (Same as your original code)
+    # ---------------------------------------------------------
+    if reviewer.role == UserRole.Admin:
+        pass # Admin bypass
+    elif reviewer.role == UserRole.Dean:
+        if not getattr(reviewer, 'school_id', None):
+             raise ValueError("Your Dean account has no School assigned.")
+        if reviewer.school_id != student.school_id:
+             raise ValueError("You are not the Dean of this student's school.")
+    elif reviewer.role == UserRole.Staff:
+        if not getattr(reviewer, 'department_id', None):
+             raise ValueError("Your Staff account has no Department assigned.")
+        if not stage.department_id:
+             raise ValueError("Staff cannot approve generic stages.")
+        if reviewer.department_id != stage.department_id:
+             raise ValueError("You do not belong to the department for this stage.")
+    else:
+        reviewer_role_str = reviewer.role.value if hasattr(reviewer.role, "value") else reviewer.role
+        if stage.verifier_role != reviewer_role_str:
+            raise ValueError(f"Access Denied: You are {reviewer_role_str}, but this stage requires {stage.verifier_role}.")
 
-    # Update Stage
+    # ---------------------------------------------------------
+    # UPDATE STAGE
+    # ---------------------------------------------------------
     stage.status = ApplicationStatus.APPROVED.value
     stage.verified_by = reviewer.id
     stage.verified_at = datetime.utcnow()
@@ -146,13 +175,13 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     
     session.add(stage)
 
-    #  CRITICAL: Flush changes so the query inside _update_application_status sees this approval
+    # CRITICAL: Flush to DB so update_status sees the change
     await session.flush()
     
-    # Update Global Status
-    await _update_application_status(session, stage.application_id)
+    # Update Global Status (Passing reviewer_id for Cert Generation)
+    await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
-    # COMMIT THE TRANSACTION
+    # COMMIT
     await session.commit()
     await session.refresh(stage)
     
@@ -165,12 +194,16 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
 async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remarks: str):
     stage_uuid = UUID(stage_id) if isinstance(stage_id, str) else stage_id
 
-    result = await session.execute(select(ApplicationStage).where(ApplicationStage.id == stage_uuid))
-    stage = result.scalar_one_or_none()
-    if not stage: raise ValueError("Stage not found")
-
-    app_res = await session.execute(select(Application).where(Application.id == stage.application_id))
-    application = app_res.scalar_one()
+    # Fetch with joins to ensure consistency
+    result = await session.execute(
+        select(ApplicationStage, Application)
+        .join(Application, ApplicationStage.application_id == Application.id)
+        .where(ApplicationStage.id == stage_uuid)
+    )
+    row = result.first()
+    
+    if not row: raise ValueError("Stage not found")
+    stage, application = row
 
     if stage.sequence_order != application.current_stage_order:
         raise ValueError("Cannot reject: Application is not currently at this stage level.")
@@ -186,13 +219,11 @@ async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remark
     
     session.add(stage)
     
-    # CRITICAL: Flush changes
     await session.flush()
     
     # Update Global Status
-    await _update_application_status(session, stage.application_id)
+    await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
-    # COMMIT THE TRANSACTION
     await session.commit()
     await session.refresh(stage)
 

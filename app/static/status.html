@@ -134,50 +134,7 @@
         
         .progress { height: 6px; margin-top: 10px; background-color: #f1f5f9; }
 
-        /* --- TERMINAL STYLES (NEW) --- */
-        .terminal-window {
-            background: #1e1e1e;
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
-            overflow: hidden;
-            font-family: 'Consolas', 'Monaco', monospace;
-            display: flex;
-            flex-direction: column;
-        }
-        .terminal-header {
-            background: #2d2d2d;
-            padding: 10px 15px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-bottom: 1px solid #333;
-        }
-        .dot { width: 12px; height: 12px; border-radius: 50%; }
-        .dot-red { background: #ff5f56; }
-        .dot-yellow { background: #ffbd2e; }
-        .dot-green { background: #27c93f; }
-
-        .terminal-body {
-            padding: 15px;
-            color: #d4d4d4;
-            font-size: 0.85rem;
-            height: 220px;
-            overflow-y: auto;
-            background: #1e1e1e;
-        }
-        /* Custom Scrollbar for Terminal */
-        .terminal-body::-webkit-scrollbar { width: 8px; }
-        .terminal-body::-webkit-scrollbar-track { background: #1e1e1e; }
-        .terminal-body::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
-
-        .log-entry { margin-bottom: 6px; border-left: 3px solid transparent; padding-left: 8px; line-height: 1.4; }
-        .log-INFO { border-left-color: #3b82f6; }
-        .log-WARNING { border-left-color: #f59e0b; color: #fcd34d; }
-        .log-ERROR { border-left-color: #ef4444; color: #fca5a5; }
-        .log-time { color: #6b7280; margin-right: 10px; font-size: 0.75em; user-select: none;}
-
         /* Helpers */
-        .text-primary-custom { color: var(--primary); }
         .bg-primary-soft { background: #e0e7ff; color: var(--primary); }
         .bg-success-soft { background: #dcfce7; color: var(--success); }
         .bg-warning-soft { background: #fef3c7; color: var(--warning); }
@@ -190,7 +147,7 @@
     <nav class="navbar sticky-top">
         <div class="container d-flex justify-content-between align-items-center">
             <a href="#" class="brand-logo">
-                <i class="fa-solid fa-layer-group text-primary-custom"></i>
+                <i class="fa-solid fa-layer-group" style="color: var(--primary);"></i>
                 GBU No Dues
             </a>
 
@@ -205,7 +162,6 @@
         </div>
     </nav>
 
-    <!-- VIEW 1: SIMPLE STATUS -->
     <div id="view-simple">
         <div class="glass-card status-hero-card">
             <div class="text-center mb-4">
@@ -220,19 +176,18 @@
 
             <ul class="list-unstyled">
                 <li class="d-flex align-items-center py-3">
-                    <div class="icon-box bg-success-soft"><i class="fa-solid fa-server"></i></div>
+                    <div class="icon-box bg-success-soft"><i class="fa-solid fa-database"></i></div>
                     <div class="flex-grow-1">
                         <span class="d-block text-muted small fw-bold">DATABASE</span>
-                        <span class="fw-medium" id="simple-db">...</span>
+                        <span class="fw-medium" id="simple-db">Checking...</span>
                     </div>
                 </li>
                 <li class="d-flex align-items-center py-3 border-bottom">
-                    <div class="icon-box bg-primary-soft"><i class="fa-solid fa-code-branch"></i></div>
+                    <div class="icon-box bg-primary-soft"><i class="fa-solid fa-envelope"></i></div>
                     <div class="flex-grow-1">
-                        <span class="d-block text-muted small fw-bold">VERSION</span>
-                        <span class="fw-medium" id="simple-version">...</span>
+                        <span class="d-block text-muted small fw-bold">SMTP SERVER</span>
+                        <span class="fw-medium" id="simple-smtp">Checking...</span>
                     </div>
-                    <i class="fa-solid fa-check-circle text-success"></i>
                 </li>
             </ul>
             
@@ -242,10 +197,8 @@
         </div>
     </div>
 
-    <!-- VIEW 2: DASHBOARD -->
     <div id="view-dashboard" class="container d-none">
         
-        <!-- Row 1: Key Metrics -->
         <div class="row g-4 mb-4">
             <div class="col-md-6 col-lg-3">
                 <div class="glass-card p-4 h-100">
@@ -294,60 +247,39 @@
             </div>
         </div>
 
-        <!-- Row 2: Disk Usage & Logs -->
-        <div class="row g-4 mb-4">
-            <!-- DISK USAGE CARD -->
-            <div class="col-md-4">
-                <div class="glass-card p-4 h-100">
-                    <div class="d-flex align-items-center mb-3">
-                        <div class="icon-box" style="background: #fee2e2; color: #ef4444;">
-                            <i class="fa-solid fa-hard-drive"></i>
-                        </div>
-                        <div>
-                            <div class="metric-label">Disk Storage</div>
-                            <div class="metric-value fs-4" id="dash-disk">0%</div>
-                        </div>
-                    </div>
-                    <div class="progress mb-2">
-                        <div id="bar-disk" class="progress-bar bg-danger" style="width: 0%"></div>
-                    </div>
-                    <small class="text-muted" style="font-size: 0.75rem;">Root Partition</small>
-                </div>
-            </div>
-
-            <!-- LIVE LOGS TERMINAL -->
-            <div class="col-md-8">
-                <div class="terminal-window h-100">
-                    <div class="terminal-header">
-                        <div class="dot dot-red"></div>
-                        <div class="dot dot-yellow"></div>
-                        <div class="dot dot-green"></div>
-                        <span class="ms-3 text-white-50 small" style="font-family: sans-serif;">System Logs (Live)</span>
-                    </div>
-                    <div class="terminal-body" id="log-container">
-                        <div class="text-muted fst-italic">Connecting to log stream...</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Row 3: Database -->
         <div class="row g-4">
-            <div class="col-12">
+            <div class="col-md-6">
                 <div class="glass-card p-4">
                     <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h5 class="mb-0 fw-bold">Database Connection</h5>
-                        <span class="badge bg-success bg-opacity-10 text-success px-3 py-2 rounded-pill">Active</span>
+                        <h5 class="mb-0 fw-bold">Database</h5>
+                        <i class="fa-solid fa-database text-muted"></i>
                     </div>
-                    <div class="d-flex align-items-center text-success">
-                        <i class="fa-solid fa-link me-2"></i>
-                        <span id="dash-db" class="fw-bold">Connected</span>
+                    <div class="d-flex align-items-center text-success mb-2">
+                        <i class="fa-solid fa-circle-check me-2"></i>
+                        <span id="dash-db" class="fw-bold fs-5">Connected</span>
                     </div>
-                    
-                    <!-- NEW DYNAMIC FIELDS HERE -->
-                    <p class="text-muted small mt-2 mb-0">
-                        Latency: <span id="dash-db-latency" class="fw-bold">--</span>ms • 
-                        Pool Size: <span id="dash-db-pool" class="fw-bold">--/--</span>
+                    <p class="text-muted small mb-0">
+                        Latency: <span id="dash-db-latency" class="fw-bold text-dark">--</span> ms
+                        <br>
+                        Pool: <span id="dash-db-pool">Managed by Supabase</span>
+                    </p>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="glass-card p-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="mb-0 fw-bold">Email Service</h5>
+                        <i class="fa-solid fa-envelope text-muted"></i>
+                    </div>
+                    <div class="d-flex align-items-center text-success mb-2">
+                        <i id="smtp-icon" class="fa-solid fa-circle-check me-2"></i>
+                        <span id="dash-smtp" class="fw-bold fs-5">Connected</span>
+                    </div>
+                    <p class="text-muted small mb-0">
+                        Provider: Gmail / SMTP
+                        <br>
+                        Status: Ready to send notifications
                     </p>
                 </div>
             </div>
@@ -374,7 +306,7 @@
             }
         }
 
-        // 2. DATA FORMATTING
+        // 2. FORMAT UPTIME
         function formatUptime(seconds) {
             const h = Math.floor(seconds / 3600);
             const m = Math.floor((seconds % 3600) / 60);
@@ -382,42 +314,48 @@
             return `${h}h ${m}m ${s}s`;
         }
 
-        // 3. FETCH METRICS (Recursive Polling)
+        // 3. FETCH METRICS
         async function loadMetrics() {
             const btnIcon = document.querySelector('.fa-rotate-right');
             btnIcon.classList.add('fa-spin');
             
             try {
-                // FETCH DATA
+                // Call API
                 const res = await fetch("/api/metrics");
                 if (!res.ok) throw new Error("API Error");
                 const data = await res.json();
 
-                // === CHECK HEALTH ===
-                const isHealthy = (data.status === "Online" && data.database === "Connected");
+                // === LOGIC: Determine Overall Health ===
+                // Healthy if DB is Connected AND SMTP is Connected (or Not Configured, which is not an error)
+                const dbOk = (data.database === "Connected");
+                const smtpOk = (data.smtp_server === "Connected" || data.smtp_server === "Not Configured");
+                const isHealthy = dbOk && smtpOk;
 
                 // === UPDATE SIMPLE VIEW ===
                 document.getElementById('hero-text').textContent = isHealthy ? "All Systems Operational" : "System Issues Detected";
-                document.getElementById('simple-version').textContent = data.version;
                 
+                // DB Text
                 const dbText = document.getElementById('simple-db');
                 dbText.textContent = data.database;
-                dbText.className = data.database === "Connected" ? "fw-medium text-success" : "fw-medium text-danger";
-                
-                // Toggle Banner Color
+                dbText.className = dbOk ? "fw-medium text-success" : "fw-medium text-danger";
+
+                // SMTP Text
+                const smtpText = document.getElementById('simple-smtp');
+                smtpText.textContent = data.smtp_server;
+                smtpText.className = (data.smtp_server === "Connected") ? "fw-medium text-success" : "fw-medium text-warning";
+
+                // Banner Color
                 const banner = document.getElementById('hero-banner');
                 if(!isHealthy) {
                     banner.style.background = "#fef2f2";
                     banner.style.color = "#991b1b";
                     banner.style.borderColor = "#fecaca";
                     banner.querySelector('.pulse-dot').style.backgroundColor = "#ef4444";
-                    banner.querySelector('.pulse-dot').style.boxShadow = "0 0 0 0 rgba(239, 68, 68, 0.7)";
                 } else {
                     banner.style.background = "#ecfdf5";
                     banner.style.color = "#065f46";
                     banner.style.borderColor = "#d1fae5";
                     banner.querySelector('.pulse-dot').style.backgroundColor = "#10b981";
-                    banner.querySelector('.pulse-dot').style.boxShadow = "0 0 0 0 rgba(16, 185, 129, 0.7)";
                 }
 
                 // === UPDATE DASHBOARD VIEW ===
@@ -427,39 +365,32 @@
                 document.getElementById('dash-ram').textContent = data.ram + "%";
                 document.getElementById('bar-ram').style.width = data.ram + "%";
 
-                if(data.disk !== undefined) {
-                    document.getElementById('dash-disk').textContent = data.disk + "%";
-                    document.getElementById('bar-disk').style.width = data.disk + "%";
-                }
-                
-                // LOGS
-                const logContainer = document.getElementById('log-container');
-                if (data.logs && data.logs.length > 0) {
-                    logContainer.innerHTML = ''; 
-                    data.logs.forEach(log => {
-                        const div = document.createElement('div');
-                        div.className = `log-entry log-${log.level}`;
-                        div.innerHTML = `<span class="log-time">[${log.time}]</span> <span class="fw-bold">${log.level}</span>: ${log.msg}`;
-                        logContainer.appendChild(div);
-                    });
-                }
-                
                 document.getElementById('dash-uptime').textContent = formatUptime(data.uptime);
                 document.getElementById('dash-version').textContent = data.version;
                 
-                // Dashboard DB Status
+                // DB Card
                 const dashDbEl = document.getElementById('dash-db');
                 dashDbEl.textContent = data.database;
-                if(data.database !== "Connected") {
-                    dashDbEl.parentElement.className = "d-flex align-items-center text-danger";
-                } else {
-                    dashDbEl.parentElement.className = "d-flex align-items-center text-success";
+                dashDbEl.parentElement.className = dbOk ? "d-flex align-items-center text-success mb-2" : "d-flex align-items-center text-danger mb-2";
+                
+                if(data.db_latency_ms !== undefined) {
+                    document.getElementById('dash-db-latency').textContent = data.db_latency_ms;
                 }
 
-                // === NEW DYNAMIC METRICS ===
-                if(data.db_latency !== undefined) {
-                    document.getElementById('dash-db-latency').textContent = data.db_latency;
-                    document.getElementById('dash-db-pool').textContent = `${data.db_pool_active}/${data.db_pool_max}`;
+                // SMTP Card
+                const dashSmtpEl = document.getElementById('dash-smtp');
+                const smtpIcon = document.getElementById('smtp-icon');
+                dashSmtpEl.textContent = data.smtp_server;
+                
+                if (data.smtp_server === "Connected") {
+                    dashSmtpEl.parentElement.className = "d-flex align-items-center text-success mb-2";
+                    smtpIcon.className = "fa-solid fa-circle-check me-2";
+                } else if (data.smtp_server === "Not Configured") {
+                    dashSmtpEl.parentElement.className = "d-flex align-items-center text-secondary mb-2";
+                    smtpIcon.className = "fa-solid fa-circle-info me-2";
+                } else {
+                    dashSmtpEl.parentElement.className = "d-flex align-items-center text-danger mb-2";
+                    smtpIcon.className = "fa-solid fa-circle-xmark me-2";
                 }
 
                 const now = new Date();
@@ -467,23 +398,17 @@
 
             } catch (err) {
                 console.error("Fetch error:", err);
-                // OFFLINE STATE
                 document.getElementById('hero-text').textContent = "Backend Offline";
+                document.getElementById('simple-db').textContent = "Unknown";
                 
                 const banner = document.getElementById('hero-banner');
                 banner.style.background = "#fee2e2";
                 banner.style.color = "#dc2626";
                 banner.querySelector('.pulse-dot').style.backgroundColor = "#dc2626";
-                
-                document.getElementById('simple-db').textContent = "Unknown";
-                
-                // Log Error
-                const logContainer = document.getElementById('log-container');
-                logContainer.innerHTML = `<div class="log-entry log-ERROR"><span class="log-time">[Now]</span> <span class="fw-bold">ERROR</span>: Failed to fetch metrics.</div>`;
 
             } finally {
                 setTimeout(() => btnIcon.classList.remove('fa-spin'), 600);
-                setTimeout(loadMetrics, 6000);
+                setTimeout(loadMetrics, 10000); // Poll every 10s
             }
         }
 
