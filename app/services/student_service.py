@@ -1,8 +1,9 @@
 # app/services/student_service.py
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import select, or_  # <--- Added 'or_' for duplicate check
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 import uuid
 
 from app.models.student import Student
@@ -16,35 +17,60 @@ from app.schemas.student import StudentRegister, StudentUpdate
 # ------------------------------------------------------------
 async def register_student_and_user(session: AsyncSession, data: StudentRegister) -> Student:
     """
-    Registration stores only minimal fields:
-        - enrollment_number
-        - roll_number
-        - full_name
-        - mobile_number
-        - email
-        - school_id  (Added)
-        - password   (User)
+    Registers a student and creates a user account.
+    INCLUDES MANUAL DUPLICATE CHECK to prevent database corruption.
     """
 
+    # 1. MANUAL DUPLICATE CHECK (CRASH PROOF VERSION)
+    # This prevents creating two students with the same Roll No if the DB constraint is missing.
+    query = select(Student).where(
+        or_(
+            Student.roll_number == data.roll_number,
+            Student.enrollment_number == data.enrollment_number
+        )
+    )
+    result = await session.execute(query)
+    
+    # FIX: Use scalars().first() instead of scalar_one_or_none()
+    # This avoids crashing if multiple duplicates already exist.
+    existing = result.scalars().first()
+
+    if existing:
+        if existing.roll_number == data.roll_number:
+            raise ValueError(f"Roll Number '{data.roll_number}' is already registered.")
+        else:
+            raise ValueError(f"Enrollment Number '{data.enrollment_number}' is already registered.")
+
     # -----------------------------
-    # 1) CREATE STUDENT
+    # 2) CREATE STUDENT
     # -----------------------------
+    # Using the exact fields from your working code + any additional fields from the schema
     student = Student(
         enrollment_number=data.enrollment_number,
         roll_number=data.roll_number,
         full_name=data.full_name,
         mobile_number=data.mobile_number,
         email=data.email,
-        school_id=data.school_id
+        school_id=data.school_id,
+        # Safely map optional fields if they exist in your schema/model
+        father_name=getattr(data, 'father_name', None),
+        mother_name=getattr(data, 'mother_name', None),
+        admission_year=getattr(data, 'admission_year', None),
+        is_hosteller=getattr(data, 'is_hosteller', False),
+        hostel_name=getattr(data, 'hostel_name', None),
+        hostel_room=getattr(data, 'hostel_room', None),
+        batch=getattr(data, 'batch', None),
+        section=getattr(data, 'section', None),
+        admission_type=getattr(data, 'admission_type', None)
     )
 
     session.add(student)
 
     try:
-        await session.flush()
+        await session.flush() # Generates the ID for the student
     except IntegrityError as e:
         await session.rollback()
-        msg = str(e.orig).lower()
+        msg = str(e.orig).lower() if hasattr(e, 'orig') else str(e)
 
         if "enrollment_number" in msg:
             raise ValueError("Enrollment number already exists")
@@ -53,12 +79,19 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
         if "email" in msg:
             raise ValueError("Email already exists")
         
-        # Fallback for other integrity errors (like invalid school_id)
+        # Fallback for other integrity errors
         raise ValueError(f"Failed to create student record: {msg}")
 
     # -----------------------------
-    # 2) CREATE LINKED USER ACCOUNT
+    # 3) CREATE LINKED USER ACCOUNT
     # -----------------------------
+    
+    # Pre-check for User email duplicate to avoid rolling back student creation unnecessarily
+    user_check = await session.execute(select(User).where(User.email == data.email))
+    if user_check.scalar_one_or_none():
+        await session.rollback()
+        raise ValueError("User email is already in use by another account.")
+
     user = User(
         id=uuid.uuid4(),
         name=data.full_name,
@@ -77,7 +110,7 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
 
     except IntegrityError as e:
         await session.rollback()
-        msg = str(e.orig).lower()
+        msg = str(e.orig).lower() if hasattr(e, 'orig') else str(e)
 
         if "email" in msg:
             raise ValueError("User email already exists")
@@ -115,7 +148,7 @@ async def update_student_profile(
 
     except IntegrityError as e:
         await session.rollback()
-        msg = str(e.orig).lower()
+        msg = str(e.orig).lower() if hasattr(e, 'orig') else str(e)
         raise ValueError(f"Failed to update student details: {msg}")
 
 
@@ -123,7 +156,12 @@ async def update_student_profile(
 # GET STUDENT BY ID
 # ------------------------------------------------------------
 async def get_student_by_id(session: AsyncSession, student_id: uuid.UUID) -> Student | None:
-    result = await session.execute(select(Student).where(Student.id == student_id))
+    # Added options(selectinload) to prevent relationship loading errors
+    result = await session.execute(
+        select(Student)
+        .where(Student.id == student_id)
+        .options(selectinload(Student.school))
+    )
     return result.scalar_one_or_none()
 
 

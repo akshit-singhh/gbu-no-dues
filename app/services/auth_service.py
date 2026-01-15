@@ -1,12 +1,13 @@
 # app/services/auth_service.py
 
-from sqlmodel import select
+from sqlmodel import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
+from loguru import logger  # <--- Added Logger
 
 from app.models.user import User, UserRole
 from app.models.student import Student
@@ -46,7 +47,7 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
 
 
 # ============================================================================
-# CREATE USER (✅ FIXED - Eager Loads Relationships)
+# CREATE USER (Eager Loads Relationships)
 # ============================================================================
 async def create_user(
     session: AsyncSession,
@@ -79,10 +80,7 @@ async def create_user(
     try:
         await session.commit()
         
-        # ✅ CRITICAL FIX: Refresh with Eager Load
-        # We must load relationships (school, department) NOW, while we are async.
-        # If we wait until Pydantic serialization (sync), it will crash with MissingGreenlet.
-        
+        # Refresh with Eager Load to prevent MissingGreenlet
         stmt = (
             select(User)
             .options(
@@ -184,7 +182,7 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
 
 
 # ============================================================================
-# AUTHENTICATE STUDENT LOGIN
+# AUTHENTICATE STUDENT LOGIN (✅ FIXED: Handles Duplicates)
 # ============================================================================
 async def authenticate_student(
     session: AsyncSession,
@@ -194,26 +192,38 @@ async def authenticate_student(
 
     identifier = identifier.strip()
 
-    result = await session.execute(
-        select(Student).where(
-            (Student.enrollment_number.ilike(identifier)) |
-            (Student.roll_number.ilike(identifier))
+    # 1. Fetch Student (Handle duplicates gracefully)
+    query = select(Student).where(
+        or_(
+            Student.enrollment_number.ilike(identifier),
+            Student.roll_number.ilike(identifier)
         )
     )
-    student = result.scalar_one_or_none()
+    result = await session.execute(query)
     
-    if not student:
+    # Use scalars().all() instead of scalar_one_or_none() to prevent crashes
+    students = result.scalars().all()
+    
+    if not students:
         return None
+        
+    if len(students) > 1:
+        logger.warning(f"⚠️ Duplicate student records found for identifier: {identifier}. Using the first one.")
+    
+    student = students[0]
 
+    # 2. Fetch Linked User
     result = await session.execute(
         select(User)
         .where(User.student_id == student.id)
         .options(selectinload(User.student))
     )
-    user = result.scalar_one_or_none()
-    
-    if not user:
+    # Same safety check for User
+    users = result.scalars().all()
+    if not users:
         return None
+    
+    user = users[0]
 
     user_role_val = user.role.value if hasattr(user.role, "value") else user.role
     if str(user_role_val) != UserRole.Student.value:
@@ -250,12 +260,11 @@ async def request_password_reset(session: AsyncSession, email: str):
 
     otp = f"{random.randint(100000, 999999)}"
     
-    # FIX: Calculate expiry time as UTC but strip tzinfo (make it naive)
-    # This prevents the "offset-naive vs offset-aware" error in AsyncPG
+    # Store as naive UTC to avoid asyncpg offset errors
     expiry_time = datetime.now(timezone.utc) + timedelta(minutes=15)
     
     user.otp_code = otp
-    user.otp_expires_at = expiry_time.replace(tzinfo=None) # Store as naive UTC
+    user.otp_expires_at = expiry_time.replace(tzinfo=None) 
     
     session.add(user)
     await session.commit()
@@ -275,10 +284,9 @@ async def verify_reset_otp(session: AsyncSession, email: str, otp: str) -> bool:
     if not user_otp or user_otp != otp:
         return False
     
-    #FIX: Handle Naive DB Timestamp vs Aware System Time
     now = datetime.now(timezone.utc)
     
-    # If DB returns naive, assume it represents UTC and make it aware
+    # If DB returns naive, assume it represents UTC and make it aware for comparison
     if user_otp_exp and user_otp_exp.tzinfo is None:
         user_otp_exp = user_otp_exp.replace(tzinfo=timezone.utc)
 
@@ -299,7 +307,6 @@ async def finalize_password_reset(session: AsyncSession, email: str, otp: str, n
     if not user_otp or user_otp != otp:
         raise ValueError("Invalid or expired OTP")
 
-    #FIX: Timestamp Comparison
     now = datetime.now(timezone.utc)
     if user_otp_exp and user_otp_exp.tzinfo is None:
         user_otp_exp = user_otp_exp.replace(tzinfo=timezone.utc)
@@ -354,7 +361,7 @@ async def update_user(
     email: str | None = None,
     role: UserRole | None = None,
     department_id: int | None = None,
-    school_id: int | None = None, # Ensure this argument is accepted!
+    school_id: int | None = None,
 ) -> User:
 
     try:
@@ -379,17 +386,13 @@ async def update_user(
     if name: user.name = name
     if role: user.role = role
 
-    # 3. Handle Foreign Keys (The Fix handles 0 -> None)
-    
-    # Update Department ID
+    # 3. Handle Foreign Keys (0 -> None)
     if department_id is not None:
-        # If frontend sends 0, treat it as None (remove department)
         if department_id == 0:
             user.department_id = None
         else:
             user.department_id = department_id
 
-    # Update School ID (If passed in kwargs)
     if school_id is not None:
         if school_id == 0:
             user.school_id = None
@@ -400,7 +403,6 @@ async def update_user(
     try:
         await session.commit()
         
-        # Re-fetch with relationships to prevent MissingGreenlet error
         stmt = (
             select(User)
             .options(
@@ -415,9 +417,7 @@ async def update_user(
 
     except IntegrityError as e:
         await session.rollback()
-        # Log the real error for debugging
         print(f"Update User Error: {str(e)}") 
-        # Check if it's a specific constraint
         if "foreign key constraint" in str(e).lower():
             raise ValueError("Invalid School ID or Department ID provided.")
         raise ValueError("Failed to update user (Database Integrity Error)")

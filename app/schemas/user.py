@@ -1,6 +1,6 @@
 # app/schemas/user.py
 
-from typing import Optional, Any
+from typing import Optional, Any, List  # <--- Added List
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, ConfigDict, model_validator
 from app.models.user import UserRole
@@ -104,3 +104,10 @@ class UserRead(UserBase):
             "school_id": sch_id,
             "school_name": sch_name
         }
+
+# ---------------------------------------------------------
+# USER LIST RESPONSE (For Pagination/Total Count)
+# ---------------------------------------------------------
+class UserListResponse(BaseModel):
+    total: int
+    users: List[UserRead]

@@ -4,6 +4,7 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 from uuid import UUID
+from loguru import logger  # IMPROVEMENT: Use Logger instead of print
 
 from app.models.application import Application, ApplicationStatus
 from app.models.application_stage import ApplicationStage
@@ -14,89 +15,94 @@ from app.models.student import Student
 from app.services.pdf_service import generate_certificate_pdf
 
 # ----------------------------------------------------------------
-# 1. SMART STATUS UPDATER (Now with Cert Trigger)
+# 1. WATERFALL STATUS UPDATER (Recursive Check + Locking)
 # ----------------------------------------------------------------
 async def _update_application_status(session: AsyncSession, application_id: UUID, trigger_user_id: UUID = None):
     """
     Checks if the application can move to the next level.
-    If completed, TRIGGERS CERTIFICATE GENERATION automatically.
+    Uses a WHILE loop to 'waterfall' through multiple completed levels at once.
     """
-    # 1. Fetch Application
-    app_res = await session.execute(select(Application).where(Application.id == application_id))
+    # 1. Fetch Application WITH LOCK (Prevents Race Conditions)
+    app_res = await session.execute(
+        select(Application)
+        .where(Application.id == application_id)
+        .with_for_update()
+    )
     app = app_res.scalar_one()
 
-    current_level = app.current_stage_order
+    # 2. START WATERFALL LOOP
+    # Keep checking levels until we hit a "Pending" stage or "Completion"
+    while True:
+        current_level = app.current_stage_order
+        
+        # Stop if already completed
+        if app.status == ApplicationStatus.COMPLETED.value:
+            break
 
-    # 2. Fetch ALL stages at the CURRENT level
-    current_stages_res = await session.execute(
-        select(ApplicationStage)
-        .where(
-            (ApplicationStage.application_id == application_id) &
-            (ApplicationStage.sequence_order == current_level)
+        # A. Fetch Stages for CURRENT Level
+        current_stages_res = await session.execute(
+            select(ApplicationStage)
+            .where(
+                (ApplicationStage.application_id == application_id) &
+                (ApplicationStage.sequence_order == current_level)
+            )
         )
-    )
-    current_stages = current_stages_res.scalars().all()
+        current_stages = current_stages_res.scalars().all()
 
-    # CHECK 1: IS ANYONE STILL PENDING?
-    if any(s.status == ApplicationStatus.PENDING.value for s in current_stages):
-        # Ensure status is synced to IN_PROGRESS if it was something else
-        if app.status != ApplicationStatus.IN_PROGRESS.value:
+        # B. Check Rejections (Immediate Stop)
+        rejected_stages = [s for s in current_stages if s.status == ApplicationStatus.REJECTED.value]
+        if rejected_stages:
+            app.status = ApplicationStatus.REJECTED.value
+            reject_notes = "; ".join([f"{s.verifier_role}: {s.comments or 'No remarks'}" for s in rejected_stages])
+            app.remarks = f"Rejected at Level {current_level}: {reject_notes}"
+            session.add(app)
+            break # Exit loop on rejection
+
+        # C. Check Pending (Immediate Stop)
+        if any(s.status == ApplicationStatus.PENDING.value for s in current_stages):
+            # Ensure status is synced to IN_PROGRESS
+            if app.status != ApplicationStatus.IN_PROGRESS.value:
+                app.status = ApplicationStatus.IN_PROGRESS.value
+                session.add(app)
+            break # Exit loop, we are stuck here waiting for user action
+
+        # D. All Approved? -> PREPARE TO MOVE UP
+        # Find next level
+        next_stage_res = await session.execute(
+            select(ApplicationStage)
+            .where(
+                (ApplicationStage.application_id == application_id) &
+                (ApplicationStage.sequence_order > current_level)
+            )
+            .order_by(ApplicationStage.sequence_order.asc())
+        )
+        next_stage = next_stage_res.scalars().first()
+
+        if next_stage:
+            # MOVE UP and CONTINUE LOOP
+            logger.info(f"🚀 App {app.display_id}: Level {current_level} Complete. Moving to Level {next_stage.sequence_order}")
+            app.current_stage_order = next_stage.sequence_order
             app.status = ApplicationStatus.IN_PROGRESS.value
             session.add(app)
-        return 
-
-    # CHECK 2: ARE THERE REJECTIONS?
-    rejected_stages = [s for s in current_stages if s.status == ApplicationStatus.REJECTED.value]
-    
-    if rejected_stages:
-        app.status = ApplicationStatus.REJECTED.value
-        reject_notes = "; ".join([f"{s.verifier_role}: {s.comments or 'No remarks'}" for s in rejected_stages])
-        app.remarks = f"Rejected at Level {current_level}: {reject_notes}"
-        session.add(app)
-        return
-
-    # CHECK 3: ALL APPROVED -> MOVE NEXT
-    # (If we reach here, it means NO rejections and NO pending at this level)
-    
-    next_stage_res = await session.execute(
-        select(ApplicationStage)
-        .where(
-            (ApplicationStage.application_id == application_id) &
-            (ApplicationStage.sequence_order > current_level)
-        )
-        .order_by(ApplicationStage.sequence_order.asc())
-    )
-    next_stage = next_stage_res.scalars().first()
-
-    if next_stage:
-        # Move to next level
-        app.current_stage_order = next_stage.sequence_order
-        app.status = ApplicationStatus.IN_PROGRESS.value
-        session.add(app)
-    else:
-        # NO NEXT STAGE -> COMPLETED
-        # Only trigger completion logic if it wasn't already completed
-        if str(app.status) != str(ApplicationStatus.COMPLETED.value):
+            # The loop continues! It will now check if this NEW level is *also* done.
+        else:
+            # NO NEXT STAGE -> FINISH
+            logger.success(f"✅ App {app.display_id} is FULLY APPROVED. Certificate Issued.")
             app.status = ApplicationStatus.COMPLETED.value
             app.is_completed = True
             app.current_stage_order = 999 
             app.remarks = "All stages cleared. Certificate Issued."
-            app.updated_at = datetime.utcnow()
             
             session.add(app)
-            # CRITICAL: Flush status to DB before generating PDF
             await session.flush() 
 
-            # --- AUTO-TRIGGER CERTIFICATE GENERATION ---
-            print(f"✅ App {app.display_id} is COMPLETE. Generating Certificate...")
+            # Trigger Certificate
             try:
-                # We pass trigger_user_id if available, or just the app.student_id if needed by your logic
-                # Ensure generate_certificate_pdf handles the logic for signer ID
                 await generate_certificate_pdf(session, app.id, trigger_user_id)
             except Exception as e:
-                print(f"⚠️ Certificate Generation Failed: {e}")
-                # Optional: You could log this error to an audit table
-                # We do NOT raise here to avoid rolling back the 'Completed' status
+                logger.error(f"⚠️ Certificate Generation Failed: {e}")
+            
+            break # Exit loop
 
     app.updated_at = datetime.utcnow()
     session.add(app)
@@ -118,7 +124,7 @@ async def _fetch_user(session: AsyncSession, reviewer_id):
 async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     stage_uuid = UUID(stage_id) if isinstance(stage_id, str) else stage_id
 
-    # 1. Fetch Stage + App + Student (Crucial for correct validation)
+    # 1. Fetch Stage + App + Student
     query = (
         select(ApplicationStage, Application, Student)
         .join(Application, ApplicationStage.application_id == Application.id)
@@ -144,10 +150,10 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
         raise ValueError("Reviewer user not found")
 
     # ---------------------------------------------------------
-    # PERMISSION CHECKS (Same as your original code)
+    # PERMISSION CHECKS
     # ---------------------------------------------------------
     if reviewer.role == UserRole.Admin:
-        pass # Admin bypass
+        pass 
     elif reviewer.role == UserRole.Dean:
         if not getattr(reviewer, 'school_id', None):
              raise ValueError("Your Dean account has no School assigned.")
@@ -175,13 +181,13 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     
     session.add(stage)
 
-    # CRITICAL: Flush to DB so update_status sees the change
+    # CRITICAL: Flush stage update so _update_application_status can see it
     await session.flush()
     
-    # Update Global Status (Passing reviewer_id for Cert Generation)
+    # Update Global Status (This uses the LOCK to prevent race conditions)
     await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
-    # COMMIT
+    # Commit the entire transaction (Stage Update + App Status Update)
     await session.commit()
     await session.refresh(stage)
     
@@ -194,7 +200,6 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
 async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remarks: str):
     stage_uuid = UUID(stage_id) if isinstance(stage_id, str) else stage_id
 
-    # Fetch with joins to ensure consistency
     result = await session.execute(
         select(ApplicationStage, Application)
         .join(Application, ApplicationStage.application_id == Application.id)
@@ -221,7 +226,7 @@ async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remark
     
     await session.flush()
     
-    # Update Global Status
+    # Update Global Status (Uses Locking)
     await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
     await session.commit()

@@ -1,6 +1,6 @@
 # app/api/endpoints/auth_student.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 import hashlib
 
@@ -8,6 +8,7 @@ from app.api.deps import get_db_session
 from app.schemas.auth import StudentLoginRequest, StudentLoginResponse
 from app.services.auth_service import authenticate_student
 from app.core.config import settings
+from app.core.rate_limiter import limiter  # <--- Import Limiter
 
 router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
 
@@ -23,7 +24,9 @@ def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
     return calculated_hash == hash_from_frontend
 
 @router.post("/login", response_model=StudentLoginResponse)
+@limiter.limit("5/minute")  # <--- 1. RATE LIMIT: Max 5 login attempts per minute per IP
 async def student_login_endpoint(
+    request: Request,  # <--- 2. MANDATORY: 'request' arg required for limiter
     data: StudentLoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):

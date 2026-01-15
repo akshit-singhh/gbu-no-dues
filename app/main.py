@@ -13,6 +13,11 @@ import uuid
 import os
 import socket
 
+# Rate Limiting Imports
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.rate_limiter import limiter  # <--- IMPORT LIMITER
+
 # Core modules
 from app.core.database import test_connection, init_db, AsyncSessionLocal
 from app.core.config import settings
@@ -30,7 +35,7 @@ from app.api.endpoints import (
     auth_student as auth_student_router,
     approvals as approvals_router,
     verification as verification_router,
-    captcha as captcha_router,  # <--- Added Captcha Router
+    captcha as captcha_router,
 )
 
 # ------------------------------------------------------------
@@ -107,6 +112,12 @@ app = FastAPI(
 )
 
 # ------------------------------------------------------------
+# RATE LIMITER CONFIGURATION
+# ------------------------------------------------------------
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ------------------------------------------------------------
 # REQUEST ID MIDDLEWARE
 # ------------------------------------------------------------
 @app.middleware("http")
@@ -151,7 +162,7 @@ async def status_page():
     return JSONResponse({"status": "running"}, status_code=200)
 
 # ------------------------------------------------------------
-# METRICS API (Updated with SMTP Check)
+# METRICS API
 # ------------------------------------------------------------
 @app.get("/api/metrics", tags=["System"])
 async def metrics():
@@ -175,7 +186,7 @@ async def metrics():
     except Exception:
         db_status = "Error"
 
-    # 2.SMTP Server Check
+    # 2. SMTP Server Check
     smtp_status = "Disconnected"
     try:
         if settings.SMTP_HOST:
@@ -202,15 +213,15 @@ async def metrics():
     }
 
 # ------------------------------------------------------------
-# CORS CONFIGURATION (FIXED FOR CAPTCHA & LOCAL NETWORK)
+# CORS CONFIGURATION
 # ------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     # This Regex allows:
     # - localhost
     # - 127.0.0.1
-    # - 192.168.x.x
-    # - 10.x.x.x
+    # - 192.168.x.x (Local Network)
+    # - 10.x.x.x (Local Network)
     # - 100.x.x.x (Tailscale/Private Networks)
     # - Any port number
     allow_origin_regex=r"http://(?:localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}|100\.\d{1,3}\.\d{1,3})(?::\d+)?",
@@ -230,7 +241,7 @@ app.include_router(auth_student_router.router)
 app.include_router(applications_router.router)
 app.include_router(approvals_router.router)
 app.include_router(verification_router.router)
-app.include_router(captcha_router.router)  # <--- Registered Captcha
+app.include_router(captcha_router.router)
 app.include_router(utils.router)
 
 # ------------------------------------------------------------

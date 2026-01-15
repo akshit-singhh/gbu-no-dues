@@ -270,7 +270,7 @@ async def get_application_stages_detailed(
     # 1. Use the Smart Dependency (Handles UUID or Display ID automatically)
     app: Application = Depends(get_application_or_404),
     session: AsyncSession = Depends(get_db_session),
-    # ✅ FIX: Allow Admin, Student, AND Verifiers (like Dean) to see stages
+    # Allow Admin, Student, AND Verifiers (like Dean) to see stages
     current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.SuperAdmin, UserRole.Student, *VERIFIER_ROLES)),
 ):
     """
@@ -718,7 +718,7 @@ async def reject_stage_endpoint(
 
 
 # ===================================================================
-# ADMIN OVERRIDE (FIXED: User.name instead of full_name)
+# ADMIN OVERRIDE - [FIXED STALE STATE BUG]
 # ===================================================================
 @router.post("/admin/override-stage", response_model=StageActionResponse)
 async def admin_override_stage_action(
@@ -732,7 +732,8 @@ async def admin_override_stage_action(
     if not stage:
         raise HTTPException(404, "Stage not found")
 
-    # 2. FIXED QUERY: Explicit join order (ApplicationStage BEFORE Department)
+    # 2. Get Student & App info (Just for logging/email, NOT for updating)
+    # We use separate variables to avoid accidental overwrites
     stmt = (
         select(Student, Application, Department.name)
         .join(Application, Application.student_id == Student.id)
@@ -740,71 +741,83 @@ async def admin_override_stage_action(
         .outerjoin(Department, ApplicationStage.department_id == Department.id)
         .where(ApplicationStage.id == stage.id)
     )
-    
     res = await session.execute(stmt)
     row = res.first()
     if not row:
         raise HTTPException(404, "Linked Application data not found")
         
-    student, application, dept_name = row
+    student, application_read_only, dept_name = row
     target_entity = dept_name if dept_name else stage.verifier_role.capitalize()
+    app_id = application_read_only.id
 
     action_type = payload.action.lower() 
     
     if action_type == "approve":
+        # A. Approve the Stage
         stage.status = "approved"
         stage.verified_by = current_user.id
         stage.verified_at = datetime.utcnow()
-        
-        # --- FIX IS HERE: Changed current_user.full_name to current_user.name ---
         stage.comments = f"ADMIN OVERRIDE: {current_user.name} Override: {payload.remarks}" if payload.remarks else "Approved via Admin Override"
         
         session.add(stage)
         
-        # 3. FIXED LOGIC: Revive Dead Applications
-        if application.status == ApplicationStatus.REJECTED:
-             application.status = ApplicationStatus.PENDING
-             application.remarks = f"{application.remarks} | Revived by Admin Override"
-             session.add(application)
+        # B. Handle "Dead" Application Revival (If needed)
+        # We fetch a FRESH copy to modify to avoid stale data
+        if application_read_only.status == ApplicationStatus.REJECTED:
+             app_to_revive = await session.get(Application, app_id)
+             app_to_revive.status = ApplicationStatus.PENDING
+             app_to_revive.remarks = f"{app_to_revive.remarks} | Revived by Admin Override"
+             session.add(app_to_revive)
 
+        # C. Flush Stage changes so the Updater sees them
         await session.flush() 
 
-        # Calculate if this override completes the application
-        await _update_application_status(session, application.id)
+        # D. Run the Waterfall Updater
+        # This will fetch its OWN fresh copy of the application and lock it
+        await _update_application_status(session, app_id, trigger_user_id=current_user.id)
         
-        await session.refresh(application)
+        # E. Check for Completion (Using a fresh fetch)
+        # We perform a new select to see the final result of the update
+        await session.commit() # Commit first to save the waterfall changes
         
-        # Check for certificate generation
-        if application.status == ApplicationStatus.COMPLETED:
+        # Re-fetch for Email/Certificate logic
+        final_app = await session.get(Application, app_id)
+        
+        # Send Email
+        if final_app.status == ApplicationStatus.COMPLETED:
             try:
-                await generate_certificate_pdf(session, application.id, current_user.id)
+                # Certificate is already generated inside _update_application_status, 
+                # but we trigger email here
+                email_data = {
+                    "name": student.full_name,
+                    "email": student.email,
+                    "roll_number": student.roll_number,
+                    "enrollment_number": student.enrollment_number,
+                    "application_id": str(final_app.id),
+                    "display_id": final_app.display_id 
+                }
+                background_tasks.add_task(send_application_approved_email, email_data)
             except Exception as e:
-                print(f"Cert Gen Error: {e}")
-
-            email_data = {
-                "name": student.full_name,
-                "email": student.email,
-                "roll_number": student.roll_number,
-                "enrollment_number": student.enrollment_number,
-                "application_id": str(application.id),
-                "display_id": application.display_id 
-            }
-            background_tasks.add_task(send_application_approved_email, email_data)
+                print(f"Email Error: {e}")
 
     elif action_type == "reject":
         if not payload.remarks or not payload.remarks.strip() or payload.remarks == "Admin Override":
             raise HTTPException(status_code=400, detail="Remarks are mandatory when rejecting.")
 
+        # Update Stage
         stage.status = "rejected"
         stage.verified_by = current_user.id
         stage.verified_at = datetime.utcnow()
         stage.comments = f"ADMIN OVERRIDE: {payload.remarks}"
         
-        application.status = ApplicationStatus.REJECTED
-        application.remarks = f"Rejected via Admin Override: {payload.remarks}"
+        # Update App (Fetch fresh to ensure atomic update)
+        app_to_reject = await session.get(Application, app_id)
+        app_to_reject.status = ApplicationStatus.REJECTED
+        app_to_reject.remarks = f"Rejected via Admin Override: {payload.remarks}"
         
         session.add(stage)
-        session.add(application)
+        session.add(app_to_reject)
+        await session.commit()
         
         email_data = {
             "name": student.full_name,
@@ -817,9 +830,7 @@ async def admin_override_stage_action(
     else:
         raise HTTPException(400, "Invalid action.")
 
-    await session.commit()
-    await session.refresh(stage)
-
+    # Logging
     background_tasks.add_task(
         log_activity,
         action=f"ADMIN_OVERRIDE_{action_type.upper()}",

@@ -1,6 +1,6 @@
 # app/api/endpoints/students.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 import hashlib
 
@@ -9,6 +9,7 @@ from app.core.rbac import AllowRoles
 from app.core.config import settings
 from app.models.user import User, UserRole
 from app.schemas.student import StudentRegister, StudentRead, StudentUpdate
+from app.core.rate_limiter import limiter  # <--- Import Limiter
 
 from app.services.student_service import (
     register_student_and_user,
@@ -37,14 +38,14 @@ def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
     return calculated_hash == hash_from_frontend
 
 # ------------------------------------------------------------
-# STUDENT SELF-REGISTRATION (PUBLIC) - [FIXED]
+# STUDENT SELF-REGISTRATION (PUBLIC) - [RATE LIMITED]
 # ------------------------------------------------------------
 @router.post("/register", response_model=StudentRead, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")  # <--- RATE LIMIT: 5 attempts per minute per IP
 async def register_student(
+    request: Request,  # <--- MANDATORY: 'request' arg required for limiter
     data: StudentRegister,
     background_tasks: BackgroundTasks,
-    # REMOVED: captcha_hash: Optional[str] = Cookie(None) 
-    # REASON: We now use data.captcha_hash from the body
     session: AsyncSession = Depends(get_db_session),
 ):
     # 1. CAPTCHA Verification (Using Hash from Body)

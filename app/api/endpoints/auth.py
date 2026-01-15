@@ -1,6 +1,6 @@
 # app/api/endpoints/auth.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Cookie, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Cookie, Response, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text
 from sqlmodel import select, or_
@@ -13,6 +13,9 @@ import csv
 import io
 import hashlib
 from app.core.config import settings
+# Rate Limiting
+from app.core.rate_limiter import limiter
+from app.schemas.user import UserRead, UserUpdate, UserListResponse
 
 # Schemas
 from app.schemas.auth import (
@@ -70,8 +73,13 @@ def verify_captcha_hash(user_input: str, cookie_hash: str) -> bool:
     return calculated_hash == cookie_hash
 
 
+# ----------------------------------------------------------------
+# LOGIN (Protected with Rate Limit)
+# ----------------------------------------------------------------
 @router.post("/login", response_model=TokenWithUser)
+@limiter.limit("10/minute")  # <--- RATE LIMIT: 5 attempts per minute per IP
 async def login(
+    request: Request,  # <--- Required for limiter
     payload: LoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -82,7 +90,6 @@ async def login(
             detail="CAPTCHA hash missing."
         )
     
-    # Use the helper (make sure verify_captcha_hash is defined or imported here too)
     if not verify_captcha_hash(payload.captcha_input, payload.captcha_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
@@ -261,11 +268,10 @@ async def register_user(
     )
     return user
 
-
 # -------------------------------------------------------------------
 # USER MANAGEMENT
 # -------------------------------------------------------------------
-@router.get("/users", response_model=List[UserRead])
+@router.get("/users", response_model=UserListResponse) # <--- Change return type here
 async def get_all_users(
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     session: AsyncSession = Depends(get_db_session),
@@ -287,7 +293,13 @@ async def get_all_users(
     query = query.order_by(User.created_at.desc())
     
     result = await session.execute(query)
-    return result.scalars().all()
+    users = result.scalars().all() # Fetch the list
+
+    # Return the new object structure
+    return {
+        "total": len(users),
+        "users": users
+    }
 
 @router.delete("/users/{user_id}", status_code=204)
 async def remove_user(
@@ -329,7 +341,7 @@ async def update_user_endpoint(
 
 
 # -------------------------------------------------------------------
-# GET CURRENT ADMIN (FIXED: MissingGreenlet Error)
+# GET CURRENT ADMIN
 # -------------------------------------------------------------------
 @router.get("/me", response_model=UserRead)
 async def me(
@@ -349,7 +361,6 @@ async def me(
         .where(User.id == current_user.id)
     )
     result = await session.execute(query)
-    # Return the FRESH object with relationships loaded
     return result.scalar_one()
 
 
@@ -478,10 +489,12 @@ async def get_dashboard_stats(
 
 
 # ===================================================================
-# GLOBAL SEARCH (OPTIMIZED)
+# GLOBAL SEARCH (OPTIMIZED + RATE LIMITED)
 # ===================================================================
 @router.get("/search", response_model=Dict[str, Any])
+@limiter.limit("60/minute")  # <--- RATE LIMIT: 60 searches per minute (1/sec)
 async def admin_global_search(
+    request: Request, # <--- Required for limiter
     q: str = Query(..., min_length=3),
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_super_admin),
@@ -559,44 +572,71 @@ async def admin_global_search(
 
 
 # ===================================================================
-# ANALYTICS
+# ANALYTICS (FIXED: Normalized Names)
 # ===================================================================
 @router.get("/analytics/performance")
 async def get_department_performance(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_super_admin),
 ):
-    # Changes made:
-    # 1. Removed "WHERE s.status IN ..." so we can see Pending items too.
-    # 2. Added COUNT(CASE...) to calculate specific metrics.
-    # 3. Added INITCAP to normalize "library" vs "Library".
+    """
+    Returns performance stats grouped by Department.
+    Normalizes inconsistent names (e.g., 'Lab' -> 'Laboratories').
+    """
     query = """
+        WITH clean_data AS (
+            SELECT 
+                -- 1. NORMALIZE NAMES
+                CASE 
+                    -- Merge 'lab', 'labs' -> 'Laboratories'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('lab', 'labs', 'laboratories', 'laboratory') 
+                        THEN 'Laboratories'
+                    
+                    -- Merge 'account', 'accounts' -> 'Accounts'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('account', 'accounts') 
+                        THEN 'Accounts'
+                    
+                    -- Stylize 'crc' -> 'CRC'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'crc' 
+                        THEN 'CRC'
+                    
+                    -- Stylize 'dean' -> 'School Dean'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'dean' 
+                        THEN 'School Dean'
+                        
+                    -- Default: Capitalize first letter (e.g., 'hostel' -> 'Hostel')
+                    ELSE INITCAP(COALESCE(d.name, s.verifier_role))
+                END as dept_name,
+                
+                s.status,
+                s.created_at,
+                s.updated_at
+            FROM application_stages s
+            LEFT JOIN departments d ON s.department_id = d.id
+        )
         SELECT 
-            -- Normalize names (e.g., 'crc' -> 'Crc') to group better
-            INITCAP(COALESCE(d.name, s.verifier_role)) as dept_name,
+            dept_name,
             
-            -- Avg hours only for items that are actually processed
-            AVG(CASE 
-                WHEN s.status IN ('approved', 'rejected') 
-                THEN EXTRACT(EPOCH FROM (s.updated_at - s.created_at))/3600 
+            -- Avg hours (only for processed items)
+            COALESCE(AVG(CASE 
+                WHEN status IN ('approved', 'rejected') 
+                THEN EXTRACT(EPOCH FROM (updated_at - created_at))/3600 
                 ELSE NULL 
-            END)::numeric(10,2) as avg_hours,
+            END), 0)::numeric(10,2) as avg_hours,
 
-            -- Specific Counts
-            COUNT(CASE WHEN s.status = 'pending' THEN 1 END) as pending_count,
-            COUNT(CASE WHEN s.status = 'rejected' THEN 1 END) as rejected_count,
-            COUNT(CASE WHEN s.status = 'approved' THEN 1 END) as approved_count,
+            -- Exact Counts
+            COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+            COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_count,
+            COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
             
-            -- Total Processed (Approved + Rejected)
-            COUNT(CASE WHEN s.status IN ('approved', 'rejected') THEN 1 END) as total_processed
+            -- Total Processed
+            COUNT(CASE WHEN status IN ('approved', 'rejected') THEN 1 END) as total_processed
 
-        FROM application_stages s
-        LEFT JOIN departments d ON s.department_id = d.id
-        
-        -- Group by the normalized name to merge 'CRC' and 'crc'
-        GROUP BY INITCAP(COALESCE(d.name, s.verifier_role))
+        FROM clean_data
+        GROUP BY dept_name
         ORDER BY pending_count DESC, total_processed DESC
     """
+    
     result = await session.execute(text(query))
     rows = result.mappings().all()
     return [dict(row) for row in rows]
