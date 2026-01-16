@@ -126,7 +126,7 @@ async def create_application(
 
 
 # ------------------------------------------------------------
-# GET MY APPLICATION
+# GET MY APPLICATION (With Progress Percentage)
 # ------------------------------------------------------------
 @router.get("/my", status_code=200)
 async def get_my_application(
@@ -158,6 +158,18 @@ async def get_my_application(
     )
     stages = stage_result.scalars().all()
 
+    # --- 1. Calculate Progress Percentage ---
+    total_stages = len(stages)
+    approved_stages = sum(1 for s in stages if str(s.status) == str(ApplicationStatus.APPROVED.value))
+    
+    # If the application is fully marked 'COMPLETED' (Accounts done), force 100%
+    if str(app.status) == str(ApplicationStatus.COMPLETED.value):
+        progress_percentage = 100
+    elif total_stages > 0:
+        progress_percentage = int((approved_stages / total_stages) * 100)
+    else:
+        progress_percentage = 0
+
     # Calculate Flags
     is_rejected = any(s.status == str(ApplicationStatus.REJECTED.value) for s in stages)
     rejected_stage = next((s for s in stages if s.status == str(ApplicationStatus.REJECTED.value)), None)
@@ -178,6 +190,7 @@ async def get_my_application(
             "batch": app.student.batch,
             "father_name": app.student.father_name,
             "hostel_name": app.student.hostel_name,
+            "is_hosteller": app.student.is_hosteller, # Useful for frontend UI
         },
         "application": {
             "id": app.id,
@@ -189,6 +202,8 @@ async def get_my_application(
             "proof_path": app.proof_document_url,
             "created_at": app.created_at,
             "updated_at": app.updated_at,
+            # ✅ Return the calculated percentage
+            "progress_percentage": progress_percentage 
         },
         "stages": [
             {

@@ -17,30 +17,48 @@ class Settings(BaseSettings):
     db_ca_cert_path: str | None = None
     ENV: str = "dev"  # "dev" or "prod"
 
-    # --- LOGIC CONFIGURATION ---
-    # Codes of Schools that do NOT require Lab Clearance.
-    # Using a Set for fast lookup (O(1)).
-    SCHOOLS_WITHOUT_LABS: Set[str] = {"SOL", "HSS"} 
+    # ------------------------------------------------------------
+    # LOGIC CONFIGURATION
+    # ------------------------------------------------------------
+    SCHOOLS_WITHOUT_LABS: Set[str] = {"SOL", "HSS", "SOM"}
+    SCHOOLS_WITHOUT_LIBRARY: Set[str] = {"VOC"}
 
-    # --- EMAIL SETTINGS ---
+    # ------------------------------------------------------------
+    # EMAIL SETTINGS
+    # ------------------------------------------------------------
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 2525
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     EMAILS_FROM_EMAIL: str = "no-reply@gbu.ac.in"
     EMAILS_FROM_NAME: str = "GBU No Dues"
-    FRONTEND_URL: str = "http://localhost:5173"
 
-    
-    # Using | None = None allows it to start even if keys are missing initially
+    # ------------------------------------------------------------
+    # FRONTEND / CORS CONFIGURATION  (IMPORTANT)
+    # ------------------------------------------------------------
+    # Exact frontend URLs (comma-separated)
+    # Example:
+    # FRONTEND_URLS=https://nodues-swxb.vercel.app,http://localhost:5173
+    FRONTEND_URLS: str = "http://localhost:5173"
+
+    # Regex for dynamic deployments (Vercel previews, Leapcell, DevTunnels)
+    # Example:
+    # https://.*\.vercel\.app|https://.*\.leapcell\.io|https://.*\.devtunnels\.ms
+    FRONTEND_REGEX: str = ""
+
+    # ------------------------------------------------------------
+    # SUPABASE
+    # ------------------------------------------------------------
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None
 
-    # This handles loading from .env and ignoring extra variables if any
+    # ------------------------------------------------------------
+    # SETTINGS CONFIG
+    # ------------------------------------------------------------
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore" 
+        extra="ignore",
     )
 
 settings = Settings()

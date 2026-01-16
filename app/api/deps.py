@@ -9,24 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.core.security import decode_token
-from app.core.database import get_session
 from app.services.auth_service import get_user_by_id
 from app.models.user import User, UserRole
 from app.models.application import Application 
 
+from app.core.database import get_db_session 
 
 # ------------------------------------------------------------
 # HTTP Bearer Authentication
 # ------------------------------------------------------------
 bearer_scheme = HTTPBearer(auto_error=True)
-
-
-# ------------------------------------------------------------
-# DB Session
-# ------------------------------------------------------------
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    async for session in get_session():
-        yield session
 
 
 # ------------------------------------------------------------

@@ -215,20 +215,21 @@ async def metrics():
 # ------------------------------------------------------------
 # CORS CONFIGURATION
 # ------------------------------------------------------------
+from fastapi.middleware.cors import CORSMiddleware
+frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")]
+
+#  Regex for dynamic domains from .env
+frontend_regex = settings.FRONTEND_REGEX or None
+
 app.add_middleware(
     CORSMiddleware,
-    # This Regex allows:
-    # - localhost
-    # - 127.0.0.1
-    # - 192.168.x.x (Local Network)
-    # - 10.x.x.x (Local Network)
-    # - 100.x.x.x (Tailscale/Private Networks)
-    # - Any port number
-    allow_origin_regex=r"http://(?:localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}|100\.\d{1,3}\.\d{1,3})(?::\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=frontend_origins,       # Exact URLs
+    allow_origin_regex=frontend_regex,    # Dynamic subdomains
+    allow_credentials=True,               # Needed for cookies/auth headers
+    allow_methods=["*"],                  # All HTTP methods
+    allow_headers=["*"],                  # All headers
 )
+
 
 # ------------------------------------------------------------
 # ROUTERS

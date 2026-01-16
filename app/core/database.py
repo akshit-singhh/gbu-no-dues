@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine
 )
-#  Removed NullPool (It causes connection churn)
 from sqlalchemy import text
 
 # ----------------------------------------------------
@@ -26,9 +25,9 @@ if not DATABASE_URL:
 
 
 # ----------------------------------------------------
-# SSL for Supabase Pooler
+# SSL Context (Relaxed for Cloud Poolers)
 # ----------------------------------------------------
-def make_ssl():
+def make_ssl_context():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -36,51 +35,58 @@ def make_ssl():
 
 
 # ----------------------------------------------------
-# AsyncPG SAFE Config (Supabase PgBouncer)
+# AsyncPG Driver Configuration (Supabase Specific)
 # ----------------------------------------------------
 connect_args = {
-    "ssl": make_ssl(),
-    "statement_cache_size": 0,  # CRITICAL: Disable prepared statements for PgBouncer
-    "command_timeout": 60,      # Give queries more time before giving up
+    "ssl": make_ssl_context(),
+    
+    # ⚠️ CRITICAL: Disable prepared statements. 
+    # Supabase Transaction Mode (port 6543/5432 pooler) does NOT support them.
+    "statement_cache_size": 0,
+    
+    # ⚠️ CRITICAL: Increase connection handshake timeout.
+    # Default is often too short for waking up dormant cloud DBs.
+    "timeout": 30,          
+    
+    # ⚠️ CRITICAL: Increase query execution timeout.
+    "command_timeout": 60,  
 }
 
-logger.info("🔄 Configuring Database (Pooler Mode with Resilience)")
+logger.info("🔄 Configuring Database Engine (Supabase Pooler Mode)")
 
 
 # ----------------------------------------------------
-# Engine (ROBUST POOLING CONFIGURATION)
+# Engine Configuration
 # ----------------------------------------------------
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,
+    echo=False,  # Set True only for local debugging
     future=True,
     connect_args=connect_args,
     
-    #  1. CONNECTION HEALTH CHECK
-    # Before running a query, SQLAlchemy sends a quick "SELECT 1".
-    # If the connection is dead, it discards it and gets a new one automatically.
-    # This prevents "ConnectionDoesNotExistError" from crashing your endpoint.
+    # 1. HEALTH CHECKS ("The Heartbeat")
+    # Before handing a connection to the app, run "SELECT 1".
+    # If it fails, drop the connection and get a fresh one. Fixes "Closed Connection" errors.
     pool_pre_ping=True,
 
-    #  2. AGGRESSIVE RECYCLING
-    # Supabase/Cloud DBs kill idle connections after ~5 mins. 
-    # We retire them locally after 5 mins (300s) so we never try to use a stale one.
-    pool_recycle=300,
+    # 2. STALE CONNECTION RECYCLING
+    # Cloud load balancers kill idle connections silently after ~5 mins.
+    # We recycle them locally every 4 mins (240s) to stay ahead of the kill.
+    pool_recycle=240,
 
-    #  3. PERSISTENT POOL (Fixes WinError 10054)
-    # Instead of closing the TCP connection after every request (NullPool),
-    # we keep 20 connections open. This stops the "handshake reset" errors.
+    # 3. POOL SIZE (Concurrency)
+    # Keep 20 connections open. Allow bursting up to 30 temporarily.
     pool_size=20,
-    max_overflow=40,  # Allow spikes up to 60 total connections
+    max_overflow=10,
     
-    #  4. TIMEOUTS
-    # Wait up to 30s to get a connection from the pool before failing
+    # 4. POOL TIMEOUT
+    # If all 30 connections are busy, wait 30s before throwing an error.
     pool_timeout=30
 )
 
 
 # ----------------------------------------------------
-# Sessions
+# Session Factory
 # ----------------------------------------------------
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
@@ -90,12 +96,19 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+# ----------------------------------------------------
+# Dependency Injection (Used in API Routers)
+# ----------------------------------------------------
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI Dependency that yields a database session.
+    Ensures session is closed even if an error occurs.
+    """
     async with AsyncSessionLocal() as session:
         try:
             yield session
         except Exception as e:
-            logger.error(f"⚠️ Database Session Error: {str(e)}")
+            logger.error(f"⚠️ Database Session Rollback: {str(e)}")
             await session.rollback()
             raise
         finally:
@@ -103,27 +116,24 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 # ----------------------------------------------------
-# Create tables (DEV / TEST ONLY)
+# Initialization & Health Checks
 # ----------------------------------------------------
 async def init_db():
+    """Creates tables if they don't exist (Dev Mode Only)."""
     try:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+        logger.info("✅ Database Tables Verified")
     except Exception as e:
-        logger.error(f"❌ Failed to init DB: {e}")
-        # Don't raise here, let the app start even if DB init fails (for resilience)
+        logger.error(f"❌ DB Init Failed: {e}")
 
-
-# ----------------------------------------------------
-# Test Connection (Silent, Safe for Metrics)
-# ----------------------------------------------------
 async def test_connection():
+    """Simple ping to verify connectivity on startup."""
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-            logger.debug("DB connection OK (Pooler)")
+            logger.info("✅ Database Connection Established")
     except Exception as e:
-        logger.error(f"❌ DB Health Check Failed: {e}")
-        # We catch the error so the health check endpoint returns status: Error 
-        # instead of crashing the whole server.
+        logger.critical(f"❌ Database Connection Failed: {e}")
+        # We re-raise here so the app crashes early if DB is unreachable
         raise e
