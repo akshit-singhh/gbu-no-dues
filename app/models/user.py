@@ -12,21 +12,24 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 if TYPE_CHECKING:
     from app.models.student import Student
     from app.models.application_stage import ApplicationStage
-    # ✅ ADDED: Imports for relationships
     from app.models.school import School
     from app.models.department import Department
 
 class UserRole(str, Enum):
-    # System Roles
-    SuperAdmin = "super_admin"   # System Owner
-    Admin = "admin"              # Generic Admin
-    Student = "student"          # Students
+    # ------------------------------------------------------------
+    # SYSTEM ROLES
+    # ------------------------------------------------------------
+    # "Admin" now represents the highest level authority (Merged with SuperAdmin)
+    Admin = "admin"              
+    Student = "student"          
     
     # Generic Staff Role
     Staff = "staff"
 
-    # Specific Authority Roles (For No Dues Approvals)
-    Dean = "dean"                # Dean of School
+    # ------------------------------------------------------------
+    # APPROVAL AUTHORITY ROLES
+    # ------------------------------------------------------------
+    Dean = "dean"                # School Dean
     Library = "library"          # Library Staff
     Hostel = "hostel"            # Hostel Warden
     Lab = "lab"                  # Lab In-charge
@@ -46,7 +49,7 @@ class User(SQLModel, table=True):
     email: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
     password_hash: str = Field(sa_column=Column(String, nullable=False))
     
-    # default to Student, but can be any role
+    # Role maps to the Enum values defined above
     role: UserRole = Field(sa_column=Column(String, default=UserRole.Student.value))
     
     is_active: bool = Field(default=True)
@@ -58,7 +61,7 @@ class User(SQLModel, table=True):
     # Link to Student Profile
     student_id: Optional[UUID] = Field(default=None, foreign_key="students.id")
 
-    # Routing Foreign Keys
+    # Routing Foreign Keys (For Deans/Staff)
     school_id: Optional[int] = Field(default=None, foreign_key="schools.id")
     department_id: Optional[int] = Field(default=None, foreign_key="departments.id")
 
@@ -73,11 +76,11 @@ class User(SQLModel, table=True):
     # --------------------------------------------------------
     student: Optional["Student"] = Relationship(back_populates="user")
     
-    # Optional: Relationship to stages verified by this user
+    # Relationship to stages verified by this user
     verified_stages: List["ApplicationStage"] = Relationship(back_populates="verifier")
 
-    # Ensure app/models/school.py has: users = Relationship(back_populates="school")
+    # School Link (For Deans)
     school: Optional["School"] = Relationship(back_populates="users")
 
-    # Ensure app/models/department.py has: users = Relationship(back_populates="department")
+    # Department Link (For Staff)
     department: Optional["Department"] = Relationship(back_populates="users")

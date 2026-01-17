@@ -13,6 +13,7 @@ from app.services.auth_service import get_user_by_id
 from app.models.user import User, UserRole
 from app.models.application import Application 
 
+# ✅ Import the robust session directly from database.py
 from app.core.database import get_db_session 
 
 # ------------------------------------------------------------
@@ -44,21 +45,18 @@ async def get_current_user(
             )
 
     except jwt.ExpiredSignatureError:
-        # --- CATCH EXPIRED TOKEN ---
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired. Please login again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.InvalidTokenError:
-        # --- CATCH INVALID TOKEN ---
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except Exception as e:
-        # --- CATCH EVERYTHING ELSE ---
         print(f"Auth Error: {str(e)}") # Debug log
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -108,7 +106,16 @@ def role_required(*allowed_roles: UserRole):
 # Exposed dependencies for routers
 # ------------------------------------------------------------
 
-require_super_admin = role_required(UserRole.Admin)
+# 1. Primary Admin Dependency
+# Use this in all new code
+require_admin = role_required(UserRole.Admin)
+
+# 2. Backward Compatibility Alias 
+# This prevents "ImportError" in other files that might still call 'require_super_admin'
+# It simply redirects them to the new Admin logic.
+require_super_admin = require_admin
+
+# 3. Other Roles
 require_dean = role_required(UserRole.Dean)
 require_staff = role_required(UserRole.Staff)
 require_student = role_required(UserRole.Student)
@@ -143,7 +150,6 @@ async def get_application_or_404(
         query = select(Application).where(Application.id == uuid_obj)
     else:
         # Smart Display ID Match (Case Insensitive)
-        # Allows 'nd235...' or 'ND235...'
         query = select(Application).where(Application.display_id == application_id.upper())
     
     # 3. Execute

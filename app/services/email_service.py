@@ -3,6 +3,7 @@
 import smtplib
 import os
 import asyncio
+import logging
 from functools import partial
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -11,21 +12,31 @@ from jinja2 import Environment, FileSystemLoader
 
 from app.core.config import settings
 
+# ---------------------------------------------------------
+# SETUP LOGGING
+# ---------------------------------------------------------
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------
 # TEMPLATE HELPER
 # ---------------------------------------------------------
 def get_template(template_name: str):
-    template_dir = os.path.join(os.getcwd(), 'app', 'templates', 'email')
+    """
+    Loads email templates from the 'app/templates/email' directory.
+    Using os.path.abspath ensures it works regardless of where the server is started.
+    """
+    template_dir = os.path.join(os.path.abspath(os.getcwd()), 'app', 'templates', 'email')
     env = Environment(loader=FileSystemLoader(template_dir))
     return env.get_template(template_name)
 
 
 # ---------------------------------------------------------
-# SYNC SMTP SENDER (DO NOT CALL DIRECTLY FROM FASTAPI)
+# SYNC SMTP SENDER (Blocking IO - Run in Executor)
 # ---------------------------------------------------------
 def send_email_via_smtp(to_email: str, subject: str, html_content: str):
     if not settings.SMTP_HOST:
+        logger.warning(f"⚠️ SMTP Host not configured. Email to {to_email} skipped.")
         return
 
     try:
@@ -35,7 +46,7 @@ def send_email_via_smtp(to_email: str, subject: str, html_content: str):
         msg["To"] = to_email
         msg.attach(MIMEText(html_content, "html"))
 
-        # SSL (465) vs STARTTLS (587)
+        # Connection Logic: Port 465 (SSL) vs 587 (STARTTLS)
         if settings.SMTP_PORT == 465:
             server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT)
         else:
@@ -46,25 +57,32 @@ def send_email_via_smtp(to_email: str, subject: str, html_content: str):
         with server:
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            
             server.sendmail(
                 settings.EMAILS_FROM_EMAIL,
                 to_email,
                 msg.as_string()
             )
 
-        print(f"✅ Email sent to {to_email}")
+        logger.info(f"✅ Email sent successfully to {to_email}")
 
     except Exception as e:
-        print(f"❌ Failed to send email: {str(e)}")
+        logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
 
 
 # ---------------------------------------------------------
-# ASYNC WRAPPER (SAFE FOR FASTAPI)
+# ASYNC WRAPPER (Non-Blocking for FastAPI)
 # ---------------------------------------------------------
 async def send_email_async(to_email: str, subject: str, html_content: str):
-    loop = asyncio.get_running_loop()
-    task = partial(send_email_via_smtp, to_email, subject, html_content)
-    await loop.run_in_executor(None, task)
+    """
+    Offloads the blocking SMTP call to a separate thread so the API remains fast.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        task = partial(send_email_via_smtp, to_email, subject, html_content)
+        await loop.run_in_executor(None, task)
+    except Exception as e:
+        logger.error(f"⚠️ Async Email Task Error: {str(e)}")
 
 
 # ---------------------------------------------------------

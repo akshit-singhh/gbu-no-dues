@@ -18,11 +18,15 @@ WORKDIR /app
 # ------------------------------------------------------------
 # System dependencies
 # ------------------------------------------------------------
+# Installs wkhtmltopdf and fonts (xfonts) needed for PDF generation
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     curl \
     ca-certificates \
+    wkhtmltopdf \
+    xfonts-75dpi \
+    xfonts-base \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------
@@ -33,21 +37,26 @@ RUN pip install --upgrade pip
 # ------------------------------------------------------------
 # Install Python dependencies
 # ------------------------------------------------------------
+# Copy requirements.txt first for caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 2. FIX: Install ONLY the new package (This creates a new fast layer)
+RUN pip install captcha==0.5.0
+
 # ------------------------------------------------------------
-# Create non-root user
+# Create non-root user for security
 # ------------------------------------------------------------
 RUN useradd -m fastapiuser
 
 # ------------------------------------------------------------
 # Copy project files
 # ------------------------------------------------------------
+# Copy app files after dependencies are installed
 COPY . .
 
 # ------------------------------------------------------------
-# Fix ownership
+# Fix file ownership
 # ------------------------------------------------------------
 RUN chown -R fastapiuser:fastapiuser /app
 
@@ -57,16 +66,16 @@ RUN chown -R fastapiuser:fastapiuser /app
 USER fastapiuser
 
 # ------------------------------------------------------------
-# Expose port
+# Expose port for the app
 # ------------------------------------------------------------
 EXPOSE 8000
 
 # ------------------------------------------------------------
-# Start FastAPI (Gunicorn + Uvicorn)
-# Dynamic workers = (2 x CPU) + 1
+# Start FastAPI with Gunicorn + UvicornWorker
 # ------------------------------------------------------------
+# Using --forwarded-allow-ips="*" to fix the proxy error
 CMD gunicorn app.main:app \
     -k uvicorn.workers.UvicornWorker \
     --workers $(python -c "import os; print(max(1, (os.cpu_count() or 1) * 2 + 1))") \
     --bind 0.0.0.0:8000 \
-    --proxy-headers
+    --forwarded-allow-ips="*"

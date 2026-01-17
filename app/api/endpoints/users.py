@@ -5,7 +5,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from typing import List
 from sqlmodel import select
 
-from app.api.deps import get_db_session, require_super_admin
+from app.api.deps import get_db_session, require_admin
 from app.schemas.user import UserRead
 from app.schemas.auth import RegisterRequest
 from app.services.auth_service import get_user_by_email, create_user
@@ -15,14 +15,14 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 
 
 # -------------------------------------------------------------------
-# Create ANY user (Super Admin only)
+# Create ANY user (Admin only)
 # -------------------------------------------------------------------
 # Added status_code=201 to match typical REST patterns and test expectations
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def create_new_user(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin)
+    _: User = Depends(require_admin) # Admin Only
 ):
     # Ensure email is unique
     existing = await get_user_by_email(session, data.email)
@@ -33,10 +33,12 @@ async def create_new_user(
         )
 
     # Validate and enforce allowed roles
-    if data.role not in UserRole.__members__.values():
+    # (Note: Pydantic usually handles this if typed as UserRole, but keeping manual check for safety)
+    allowed_values = [r.value for r in UserRole]
+    if data.role not in allowed_values:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid role '{data.role}'. Allowed roles: {[r.value for r in UserRole]}"
+            detail=f"Invalid role '{data.role}'. Allowed roles: {allowed_values}"
         )
 
     # Create user
@@ -51,25 +53,25 @@ async def create_new_user(
 
 
 # -------------------------------------------------------------------
-# List all users (Super Admin only)
+# List all users (Admin only)
 # -------------------------------------------------------------------
 @router.get("/", response_model=List[UserRead])
 async def list_users(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin)
+    _: User = Depends(require_admin) # Admin Only
 ):
     result = await session.execute(select(User))
     return result.scalars().all()
 
 
 # -------------------------------------------------------------------
-# Delete a user (Super Admin only)
+# Delete a user (Admin only)
 # -------------------------------------------------------------------
 @router.delete("/{user_id}")
 async def delete_user(
     user_id: str,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin)
+    _: User = Depends(require_admin) # Admin Only
 ):
     user = await session.get(User, user_id)
     if not user:

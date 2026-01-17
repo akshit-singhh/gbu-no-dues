@@ -16,7 +16,7 @@ import socket
 # Rate Limiting Imports
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.core.rate_limiter import limiter  # <--- IMPORT LIMITER
+from app.core.rate_limiter import limiter
 
 # Core modules
 from app.core.database import test_connection, init_db, AsyncSessionLocal
@@ -75,27 +75,28 @@ async def lifespan(app: FastAPI):
         logger.exception("❌ Startup failed: Database unavailable.")
         raise
 
-    # 2. Seed Super Admin
+    # 2. Seed System Admin
+    # ✅ FIX: Updated to use ADMIN_EMAIL/PASSWORD from your new config
     try:
         async with AsyncSessionLocal() as session:
-            if settings.SUPER_ADMIN_EMAIL and settings.SUPER_ADMIN_PASSWORD:
-                existing = await get_user_by_email(session, settings.SUPER_ADMIN_EMAIL)
+            if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
+                existing = await get_user_by_email(session, settings.ADMIN_EMAIL)
                 if not existing:
-                    logger.info("Seeding Super Admin account...")
+                    logger.info(f"Seeding Admin account ({settings.ADMIN_EMAIL})...")
                     await create_user(
                         session=session,
-                        name=settings.SUPER_ADMIN_NAME or "Super Admin",
-                        email=settings.SUPER_ADMIN_EMAIL,
-                        password=settings.SUPER_ADMIN_PASSWORD,
-                        role=UserRole.Admin,
+                        name=settings.ADMIN_NAME or "System Admin",
+                        email=settings.ADMIN_EMAIL,
+                        password=settings.ADMIN_PASSWORD,
+                        role=UserRole.Admin, # Assigns the new unified Admin role
                     )
-                    logger.success("Super Admin created.")
+                    logger.success("System Admin created successfully.")
                 else:
-                    logger.info("Super Admin already exists.")
+                    logger.info("System Admin already exists.")
             else:
-                logger.warning("Super Admin credentials missing.")
+                logger.warning("Admin credentials missing in .env (ADMIN_EMAIL/PASSWORD).")
     except Exception:
-        logger.exception("Super Admin seeding failed.")
+        logger.exception("System Admin seeding failed.")
 
     logger.success("✅ Backend startup completed.")
     yield
@@ -215,21 +216,17 @@ async def metrics():
 # ------------------------------------------------------------
 # CORS CONFIGURATION
 # ------------------------------------------------------------
-from fastapi.middleware.cors import CORSMiddleware
 frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")]
-
-#  Regex for dynamic domains from .env
 frontend_regex = settings.FRONTEND_REGEX or None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=frontend_origins,       # Exact URLs
-    allow_origin_regex=frontend_regex,    # Dynamic subdomains
-    allow_credentials=True,               # Needed for cookies/auth headers
-    allow_methods=["*"],                  # All HTTP methods
-    allow_headers=["*"],                  # All headers
+    allow_origins=frontend_origins,
+    allow_origin_regex=frontend_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
 
 # ------------------------------------------------------------
 # ROUTERS

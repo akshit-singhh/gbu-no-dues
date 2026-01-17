@@ -53,9 +53,9 @@ from app.services.auth_service import (
 from app.services.student_service import list_students
 
 # Deps
-from app.api.deps import get_db_session, get_current_user, require_super_admin
+from app.api.deps import get_db_session, get_current_user, require_admin
 
-router = APIRouter(prefix="/api/admin", tags=["Auth (Super Admin)"])
+router = APIRouter(prefix="/api/admin", tags=["Auth (Admin)"])
 
 
 # ----------------------------------------------------------------
@@ -77,7 +77,7 @@ def verify_captcha_hash(user_input: str, cookie_hash: str) -> bool:
 # LOGIN (Protected with Rate Limit)
 # ----------------------------------------------------------------
 @router.post("/login", response_model=TokenWithUser)
-@limiter.limit("10/minute")  # <--- RATE LIMIT: 5 attempts per minute per IP
+@limiter.limit("10/minute")  # <--- RATE LIMIT: 10 attempts per minute per IP
 async def login(
     request: Request,  # <--- Required for limiter
     payload: LoginRequest,
@@ -113,7 +113,7 @@ async def login(
 async def create_school(
     payload: SchoolCreateRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     res = await session.execute(
         select(School).where(
@@ -132,7 +132,7 @@ async def create_school(
 @router.get("/schools", response_model=List[School])
 async def list_schools(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     result = await session.execute(select(School).order_by(School.name))
     return result.scalars().all()
@@ -141,7 +141,7 @@ async def list_schools(
 async def delete_school(
     school_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     school = await session.get(School, school_id)
     if not school:
@@ -163,7 +163,7 @@ async def delete_school(
 async def create_department(
     payload: DepartmentCreateRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     res = await session.execute(select(Department).where(Department.name == payload.name))
     if res.scalar_one_or_none():
@@ -178,7 +178,7 @@ async def create_department(
 @router.get("/departments", response_model=List[Department])
 async def list_departments(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     result = await session.execute(select(Department).order_by(Department.phase_number, Department.name))
     return result.scalars().all()
@@ -187,7 +187,7 @@ async def list_departments(
 async def delete_department(
     dept_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     dept = await session.get(Department, dept_id)
     if not dept:
@@ -202,13 +202,13 @@ async def delete_department(
 
 
 # -------------------------------------------------------------------
-# REGISTER SUPER ADMIN
+# REGISTER ADMIN (Renamed for Clarity, kept logic)
 # -------------------------------------------------------------------
-@router.post("/register-super-admin", response_model=UserRead)
-async def register_super_admin(
+@router.post("/register-admin", response_model=UserRead)
+async def register_admin_account(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     if data.role != UserRole.Admin:
         raise HTTPException(400, detail="This endpoint only creates Admin accounts.")
@@ -236,10 +236,10 @@ async def register_super_admin(
 async def register_user(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     if data.role == UserRole.Admin:
-        raise HTTPException(400, detail="Use /register-super-admin for Admin accounts.")
+        raise HTTPException(400, detail="Use /register-admin for Admin accounts.")
 
     existing = await get_user_by_email(session, data.email)
     if existing:
@@ -271,11 +271,11 @@ async def register_user(
 # -------------------------------------------------------------------
 # USER MANAGEMENT
 # -------------------------------------------------------------------
-@router.get("/users", response_model=UserListResponse) # <--- Change return type here
+@router.get("/users", response_model=UserListResponse)
 async def get_all_users(
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     # Construct query with specific load options to ensure Pydantic has data
     query = select(User)
@@ -305,7 +305,7 @@ async def get_all_users(
 async def remove_user(
     user_id: UUID,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     try:
         await delete_user_by_id(session, str(user_id))
@@ -318,7 +318,7 @@ async def update_user_endpoint(
     user_id: str,
     data: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     # Validation
     if data.role == UserRole.Staff and not data.department_id:
@@ -371,7 +371,7 @@ async def me(
 async def admin_get_student_by_id_or_roll(
     input_id: str,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     """
     Get student details AND their latest application status.
@@ -433,7 +433,7 @@ async def get_audit_logs(
     actor_role: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
     if action:
@@ -450,7 +450,7 @@ async def get_audit_logs(
 @router.get("/dashboard-stats")
 async def get_dashboard_stats(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     # 1. General Application Counts
     status_query = select(Application.status, func.count(Application.id)).group_by(Application.status)
@@ -497,7 +497,7 @@ async def admin_global_search(
     request: Request, # <--- Required for limiter
     q: str = Query(..., min_length=3),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     term = f"%{q.lower()}%"
     
@@ -577,7 +577,7 @@ async def admin_global_search(
 @router.get("/analytics/performance")
 async def get_department_performance(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     """
     Returns performance stats grouped by Department.
@@ -648,7 +648,7 @@ async def get_department_performance(
 @router.get("/reports/export-cleared")
 async def export_cleared_students(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_super_admin),
+    _: User = Depends(require_admin), # Admin only
 ):
     query = (
         select(Application, Student, School, Certificate)

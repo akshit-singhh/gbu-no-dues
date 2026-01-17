@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
-from loguru import logger  # <--- Added Logger
+from loguru import logger 
 
 from app.models.user import User, UserRole
 from app.models.student import Student
@@ -80,7 +80,7 @@ async def create_user(
     try:
         await session.commit()
         
-        # Refresh with Eager Load to prevent MissingGreenlet
+        # Refresh with Eager Load to prevent MissingGreenlet errors in Pydantic
         stmt = (
             select(User)
             .options(
@@ -101,7 +101,7 @@ async def create_user(
 
 
 # ============================================================================
-# AUTHENTICATE USER
+# AUTHENTICATE USER (Admin / Staff / Dean)
 # ============================================================================
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> User | None:
     user = await get_user_by_email(session, email)
@@ -182,7 +182,7 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
 
 
 # ============================================================================
-# AUTHENTICATE STUDENT LOGIN (✅ FIXED: Handles Duplicates)
+# AUTHENTICATE STUDENT LOGIN (Robust Duplicate Handling)
 # ============================================================================
 async def authenticate_student(
     session: AsyncSession,
@@ -196,21 +196,25 @@ async def authenticate_student(
     query = select(Student).where(
         or_(
             Student.enrollment_number.ilike(identifier),
-            Student.roll_number.ilike(identifier)
+            Student.roll_number.ilike(identifier),
+            Student.email.ilike(identifier)
         )
     )
     result = await session.execute(query)
     
-    # Use scalars().all() instead of scalar_one_or_none() to prevent crashes
+    # Use scalars().all() to get list
     students = result.scalars().all()
     
     if not students:
         return None
         
+    # ✅ FIX: Self-Healing Logic for Duplicates
     if len(students) > 1:
-        logger.warning(f"⚠️ Duplicate student records found for identifier: {identifier}. Using the first one.")
-    
-    student = students[0]
+        logger.warning(f"⚠️ Duplicate student records found for: {identifier}. Using the most recent.")
+        # Sort by creation time descending (newest first)
+        student = sorted(students, key=lambda s: s.created_at, reverse=True)[0]
+    else:
+        student = students[0]
 
     # 2. Fetch Linked User
     result = await session.execute(
@@ -218,17 +222,20 @@ async def authenticate_student(
         .where(User.student_id == student.id)
         .options(selectinload(User.student))
     )
-    # Same safety check for User
     users = result.scalars().all()
+    
     if not users:
         return None
     
+    # Safe pick user
     user = users[0]
 
+    # Verify Role
     user_role_val = user.role.value if hasattr(user.role, "value") else user.role
     if str(user_role_val) != UserRole.Student.value:
         return None
 
+    # Verify Password
     if not verify_password(password, user.password_hash):
         return None
 
@@ -251,7 +258,7 @@ async def authenticate_student(
 
 
 # ============================================================================
-# FORGOT PASSWORD LOGIC
+# FORGOT PASSWORD LOGIC (Timezone Safe)
 # ============================================================================
 async def request_password_reset(session: AsyncSession, email: str):
     user = await get_user_by_email(session, email)
@@ -286,7 +293,7 @@ async def verify_reset_otp(session: AsyncSession, email: str, otp: str) -> bool:
     
     now = datetime.now(timezone.utc)
     
-    # If DB returns naive, assume it represents UTC and make it aware for comparison
+    # Fix Timezone Comparison Error
     if user_otp_exp and user_otp_exp.tzinfo is None:
         user_otp_exp = user_otp_exp.replace(tzinfo=timezone.utc)
 
@@ -301,18 +308,10 @@ async def finalize_password_reset(session: AsyncSession, email: str, otp: str, n
     if not user:
         raise ValueError("User not found")
     
-    user_otp = getattr(user, "otp_code", None)
-    user_otp_exp = getattr(user, "otp_expires_at", None)
-
-    if not user_otp or user_otp != otp:
+    # Re-verify inside finalize for security
+    is_valid = await verify_reset_otp(session, email, otp)
+    if not is_valid:
         raise ValueError("Invalid or expired OTP")
-
-    now = datetime.now(timezone.utc)
-    if user_otp_exp and user_otp_exp.tzinfo is None:
-        user_otp_exp = user_otp_exp.replace(tzinfo=timezone.utc)
-
-    if user_otp_exp and user_otp_exp < now:
-        raise ValueError("OTP has expired")
 
     user.password_hash = get_password_hash(new_password)
     

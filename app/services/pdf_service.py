@@ -4,6 +4,7 @@ import os
 import io
 import uuid
 import base64
+import shutil  # <--- ADDED: To find the executable path dynamically
 import pdfkit
 import qrcode
 from datetime import datetime
@@ -38,14 +39,24 @@ template_env = Environment(
 )
 
 # -----------------------------
-# WKHTMLTOPDF CONFIG
+# WKHTMLTOPDF CONFIG (FIXED)
 # -----------------------------
-if os.name == "nt":
-    WKHTMLTOPDF_PATH = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
-else:
-    WKHTMLTOPDF_PATH = "/usr/bin/wkhtmltopdf"
+# 1. Try to find wkhtmltopdf on the system PATH (works for Docker/Linux)
+path_wkhtmltopdf = shutil.which("wkhtmltopdf")
 
-config = pdfkit.configuration(wkhtmltopdf=WKHTMLTOPDF_PATH)
+# 2. Fallback for Windows local development if not in PATH
+if path_wkhtmltopdf is None and os.name == "nt":
+    possible_path = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+    if os.path.exists(possible_path):
+        path_wkhtmltopdf = possible_path
+
+# 3. Configure pdfkit
+if path_wkhtmltopdf:
+    config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
+else:
+    # If not found, let pdfkit try its default detection mechanism
+    # (This avoids the immediate crash if the path isn't explicitly set)
+    config = pdfkit.configuration()
 
 options = {
     "page-size": "A4",
@@ -66,6 +77,10 @@ options = {
 # HELPER: Encode Image to Base64
 # -----------------------------
 def image_to_base64(path: str) -> str:
+    # Check if file exists to prevent FileNotFoundError crashing the server
+    if not os.path.exists(path):
+        return ""
+        
     with open(path, "rb") as f:
         encoded = base64.b64encode(f.read()).decode()
     return encoded

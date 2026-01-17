@@ -9,7 +9,7 @@ from uuid import UUID
 from typing import Optional
 from datetime import datetime
 
-from app.api.deps import get_db_session, require_super_admin, get_application_or_404
+from app.api.deps import get_db_session, get_application_or_404
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
 from app.models.application import Application, ApplicationStatus
@@ -263,15 +263,14 @@ async def list_all_applications(
 
 
 # ===================================================================
-# GET ALL STAGES DETAILED (Supports Display ID) - [FIXED PERMISSIONS]
+# GET ALL STAGES DETAILED (Supports Display ID)
 # ===================================================================
 @router.get("/{application_id}/stages")
 async def get_application_stages_detailed(
     # 1. Use the Smart Dependency (Handles UUID or Display ID automatically)
     app: Application = Depends(get_application_or_404),
     session: AsyncSession = Depends(get_db_session),
-    # Allow Admin, Student, AND Verifiers (like Dean) to see stages
-    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.SuperAdmin, UserRole.Student, *VERIFIER_ROLES)),
+    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.Student, *VERIFIER_ROLES)),
 ):
     """
     Fetches ALL stages for a specific application.
@@ -319,9 +318,7 @@ async def get_application_stages_detailed(
 
     return {
         "application_id": app.id,
-        
         "display_id": app.display_id, 
-        
         "status": app.status,
         "stages": stages_data
     }
@@ -500,7 +497,7 @@ async def get_enriched_application_details(
     return response_dict
 
 # ===================================================================
-# GET APPLICATION DETAILS (Basic) - [FIXED SECURITY]
+# GET APPLICATION DETAILS (Basic)
 # ===================================================================
 @router.get("/{application_id}")
 async def get_application_details(
@@ -548,7 +545,7 @@ async def get_application_details(
     }
 
 # ===================================================================
-# APPROVE STAGE - [FIXED UUID ISSUE]
+# APPROVE STAGE
 # ===================================================================
 @router.post("/{stage_id}/approve", response_model=StageActionResponse)
 async def approve_stage_endpoint(
@@ -558,7 +555,7 @@ async def approve_stage_endpoint(
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
-        # 1. Validate UUID (Instead of Integer)
+        # 1. Validate UUID
         try:
             stage_uuid = UUID(stage_id)
         except ValueError:
@@ -569,7 +566,8 @@ async def approve_stage_endpoint(
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        is_admin = current_user.role in [UserRole.Admin, UserRole.SuperAdmin]
+        # ✅ CHECK: Use UserRole.Admin only
+        is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:
             if stage.status != "pending":
@@ -584,7 +582,6 @@ async def approve_stage_endpoint(
             
             await _update_application_status(session, stage.application_id)
         else:
-            # Pass the string ID to service, or UUID if service expects UUID
             stage = await approve_stage(session, str(stage_uuid), current_user.id)
 
         await session.commit()
@@ -641,7 +638,7 @@ async def approve_stage_endpoint(
 
 
 # ===================================================================
-# REJECT STAGE - [FIXED UUID ISSUE]
+# REJECT STAGE
 # ===================================================================
 @router.post("/{stage_id}/reject", response_model=StageActionResponse)
 async def reject_stage_endpoint(
@@ -666,7 +663,8 @@ async def reject_stage_endpoint(
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        is_admin = current_user.role in [UserRole.Admin, UserRole.SuperAdmin]
+        # ✅ CHECK: Use UserRole.Admin only
+        is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:
             if stage.status != "pending":
@@ -718,22 +716,21 @@ async def reject_stage_endpoint(
 
 
 # ===================================================================
-# ADMIN OVERRIDE - [FIXED STALE STATE BUG]
+# ADMIN OVERRIDE
 # ===================================================================
 @router.post("/admin/override-stage", response_model=StageActionResponse)
 async def admin_override_stage_action(
     payload: AdminOverrideRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(require_super_admin),
+    # ✅ Require 'admin' role directly
+    current_user: User = Depends(AllowRoles(UserRole.Admin)), 
 ):
     # 1. Fetch Stage
     stage = await session.get(ApplicationStage, payload.stage_id)
     if not stage:
         raise HTTPException(404, "Stage not found")
 
-    # 2. Get Student & App info (Just for logging/email, NOT for updating)
-    # We use separate variables to avoid accidental overwrites
     stmt = (
         select(Student, Application, Department.name)
         .join(Application, Application.student_id == Student.id)
@@ -753,7 +750,6 @@ async def admin_override_stage_action(
     action_type = payload.action.lower() 
     
     if action_type == "approve":
-        # A. Approve the Stage
         stage.status = "approved"
         stage.verified_by = current_user.id
         stage.verified_at = datetime.utcnow()
@@ -761,33 +757,25 @@ async def admin_override_stage_action(
         
         session.add(stage)
         
-        # B. Handle "Dead" Application Revival (If needed)
-        # We fetch a FRESH copy to modify to avoid stale data
+        # Handle "Dead" Application Revival
         if application_read_only.status == ApplicationStatus.REJECTED:
              app_to_revive = await session.get(Application, app_id)
              app_to_revive.status = ApplicationStatus.PENDING
              app_to_revive.remarks = f"{app_to_revive.remarks} | Revived by Admin Override"
              session.add(app_to_revive)
 
-        # C. Flush Stage changes so the Updater sees them
         await session.flush() 
 
-        # D. Run the Waterfall Updater
-        # This will fetch its OWN fresh copy of the application and lock it
+        # Run Waterfall Updater
         await _update_application_status(session, app_id, trigger_user_id=current_user.id)
         
-        # E. Check for Completion (Using a fresh fetch)
-        # We perform a new select to see the final result of the update
-        await session.commit() # Commit first to save the waterfall changes
+        await session.commit() 
         
         # Re-fetch for Email/Certificate logic
         final_app = await session.get(Application, app_id)
         
-        # Send Email
         if final_app.status == ApplicationStatus.COMPLETED:
             try:
-                # Certificate is already generated inside _update_application_status, 
-                # but we trigger email here
                 email_data = {
                     "name": student.full_name,
                     "email": student.email,
@@ -804,13 +792,11 @@ async def admin_override_stage_action(
         if not payload.remarks or not payload.remarks.strip() or payload.remarks == "Admin Override":
             raise HTTPException(status_code=400, detail="Remarks are mandatory when rejecting.")
 
-        # Update Stage
         stage.status = "rejected"
         stage.verified_by = current_user.id
         stage.verified_at = datetime.utcnow()
         stage.comments = f"ADMIN OVERRIDE: {payload.remarks}"
         
-        # Update App (Fetch fresh to ensure atomic update)
         app_to_reject = await session.get(Application, app_id)
         app_to_reject.status = ApplicationStatus.REJECTED
         app_to_reject.remarks = f"Rejected via Admin Override: {payload.remarks}"
@@ -830,7 +816,6 @@ async def admin_override_stage_action(
     else:
         raise HTTPException(400, "Invalid action.")
 
-    # Logging
     background_tasks.add_task(
         log_activity,
         action=f"ADMIN_OVERRIDE_{action_type.upper()}",
