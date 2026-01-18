@@ -4,7 +4,7 @@ import os
 import io
 import uuid
 import base64
-import shutil  # <--- ADDED: To find the executable path dynamically
+import shutil
 import pdfkit
 import qrcode
 from datetime import datetime
@@ -20,9 +20,14 @@ from app.models.department import Department
 from app.models.user import User
 from app.models.certificate import Certificate
 
-# -----------------------------
+# ======================================================
+# ENVIRONMENT DETECTION
+# ======================================================
+IS_VERCEL = os.getenv("VERCEL") == "1"
+
+# ======================================================
 # PATH CONFIGURATION
-# -----------------------------
+# ======================================================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -30,34 +35,34 @@ CERT_DIR = os.path.join(STATIC_DIR, "certificates")
 
 os.makedirs(CERT_DIR, exist_ok=True)
 
-# -----------------------------
+# ======================================================
 # JINJA2 SETUP
-# -----------------------------
+# ======================================================
 template_env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=True
 )
 
-# -----------------------------
-# WKHTMLTOPDF CONFIG (FIXED)
-# -----------------------------
-# 1. Try to find wkhtmltopdf on the system PATH (works for Docker/Linux)
-path_wkhtmltopdf = shutil.which("wkhtmltopdf")
+# ======================================================
+# WKHTMLTOPDF CONFIG (SAFE FOR VERCEL)
+# ======================================================
+config = None
 
-# 2. Fallback for Windows local development if not in PATH
-if path_wkhtmltopdf is None and os.name == "nt":
-    possible_path = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
-    if os.path.exists(possible_path):
-        path_wkhtmltopdf = possible_path
+if not IS_VERCEL:
+    path_wkhtmltopdf = shutil.which("wkhtmltopdf")
 
-# 3. Configure pdfkit
-if path_wkhtmltopdf:
-    config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
-else:
-    # If not found, let pdfkit try its default detection mechanism
-    # (This avoids the immediate crash if the path isn't explicitly set)
-    config = pdfkit.configuration()
+    # Windows fallback (local dev)
+    if path_wkhtmltopdf is None and os.name == "nt":
+        win_path = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+        if os.path.exists(win_path):
+            path_wkhtmltopdf = win_path
 
+    if path_wkhtmltopdf:
+        config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
+
+# ======================================================
+# PDF OPTIONS
+# ======================================================
 options = {
     "page-size": "A4",
     "margin-top": "15mm",
@@ -73,34 +78,41 @@ options = {
     "no-outline": None
 }
 
-# -----------------------------
-# HELPER: Encode Image to Base64
-# -----------------------------
+# ======================================================
+# HELPER: IMAGE → BASE64
+# ======================================================
 def image_to_base64(path: str) -> str:
-    # Check if file exists to prevent FileNotFoundError crashing the server
     if not os.path.exists(path):
         return ""
-        
     with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
-    return encoded
+        return base64.b64encode(f.read()).decode()
 
-# -----------------------------
+# ======================================================
 # MAIN FUNCTION
-# -----------------------------
+# ======================================================
 async def generate_certificate_pdf(
     session: AsyncSession,
     application_id: uuid.UUID,
     generated_by_id: uuid.UUID | None = None
 ) -> bytes:
     """
-    Generates a PDF certificate using wkhtmltopdf with embedded logo and QR.
-    No local QR or logo files are required.
+    Generates a PDF certificate.
+    - Works on Linux/Docker/Windows
+    - Gracefully fails on Vercel
     """
 
-    # -----------------------------
-    # FETCH APPLICATION & STUDENT
-    # -----------------------------
+    # --------------------------------------------------
+    # BLOCK PDF GENERATION ON VERCEL
+    # --------------------------------------------------
+    if IS_VERCEL or not config:
+        raise RuntimeError(
+            "PDF generation is disabled on Vercel. "
+            "Deploy this service on Docker/Railway/Render."
+        )
+
+    # --------------------------------------------------
+    # FETCH APPLICATION
+    # --------------------------------------------------
     application = (
         await session.execute(
             select(Application).where(Application.id == application_id)
@@ -113,9 +125,9 @@ async def generate_certificate_pdf(
         )
     ).scalar_one()
 
-    # -----------------------------
+    # --------------------------------------------------
     # FETCH STAGES
-    # -----------------------------
+    # --------------------------------------------------
     stages_query = (
         select(ApplicationStage, Department.name, User.name)
         .outerjoin(Department, ApplicationStage.department_id == Department.id)
@@ -135,9 +147,9 @@ async def generate_certificate_pdf(
             "reviewed_at": stage.verified_at.strftime("%d-%m-%Y") if stage.verified_at else "-"
         })
 
-    # -----------------------------
-    # CERTIFICATE ID
-    # -----------------------------
+    # --------------------------------------------------
+    # CERTIFICATE NUMBER
+    # --------------------------------------------------
     cert = (
         await session.execute(
             select(Certificate).where(Certificate.application_id == application.id)
@@ -150,10 +162,11 @@ async def generate_certificate_pdf(
         suffix = uuid.uuid4().hex[:5].upper()
         readable_id = f"GBU-ND-{datetime.now().year}-{suffix}"
 
-    # -----------------------------
+    # --------------------------------------------------
     # QR CODE (IN-MEMORY)
-    # -----------------------------
+    # --------------------------------------------------
     certificate_url = f"{settings.FRONTEND_URL}/verify/{readable_id}"
+
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(certificate_url)
     qr.make(fit=True)
@@ -163,15 +176,15 @@ async def generate_certificate_pdf(
     qr_image.save(qr_buffer, format="PNG")
     qr_base64 = base64.b64encode(qr_buffer.getvalue()).decode()
 
-    # -----------------------------
+    # --------------------------------------------------
     # LOGO (IN-MEMORY)
-    # -----------------------------
+    # --------------------------------------------------
     logo_path = os.path.join(STATIC_DIR, "images", "gbu_logo.png")
     logo_base64 = image_to_base64(logo_path)
 
-    # -----------------------------
+    # --------------------------------------------------
     # TEMPLATE CONTEXT
-    # -----------------------------
+    # --------------------------------------------------
     context = {
         "student": student,
         "stages": formatted_stages,
@@ -182,29 +195,37 @@ async def generate_certificate_pdf(
         "logo_base64": logo_base64
     }
 
-    # -----------------------------
+    # --------------------------------------------------
     # RENDER HTML
-    # -----------------------------
-    html = template_env.get_template("pdf/certificate_template.html").render(context)
+    # --------------------------------------------------
+    html = template_env.get_template(
+        "pdf/certificate_template.html"
+    ).render(context)
 
-    # -----------------------------
+    # --------------------------------------------------
     # GENERATE PDF
-    # -----------------------------
-    pdf_bytes = pdfkit.from_string(html, False, configuration=config, options=options)
+    # --------------------------------------------------
+    pdf_bytes = pdfkit.from_string(
+        html,
+        False,
+        configuration=config,
+        options=options
+    )
 
-    # -----------------------------
-    # SAVE PDF (OPTIONAL)
-    # -----------------------------
+    # --------------------------------------------------
+    # SAVE PDF
+    # --------------------------------------------------
     pdf_name = f"certificate_{application.id}.pdf"
     pdf_path = os.path.join(CERT_DIR, pdf_name)
+
     with open(pdf_path, "wb") as f:
         f.write(pdf_bytes)
 
     pdf_url = f"/static/certificates/{pdf_name}"
 
-    # -----------------------------
+    # --------------------------------------------------
     # SAVE DB RECORD
-    # -----------------------------
+    # --------------------------------------------------
     if cert:
         cert.pdf_url = pdf_url
         cert.generated_at = datetime.utcnow()
@@ -212,14 +233,16 @@ async def generate_certificate_pdf(
         cert.generated_by = generated_by_id
         session.add(cert)
     else:
-        session.add(Certificate(
-            id=uuid.uuid4(),
-            application_id=application.id,
-            certificate_number=readable_id,
-            pdf_url=pdf_url,
-            generated_at=datetime.utcnow(),
-            generated_by=generated_by_id
-        ))
+        session.add(
+            Certificate(
+                id=uuid.uuid4(),
+                application_id=application.id,
+                certificate_number=readable_id,
+                pdf_url=pdf_url,
+                generated_at=datetime.utcnow(),
+                generated_by=generated_by_id
+            )
+        )
 
     await session.commit()
     return pdf_bytes
