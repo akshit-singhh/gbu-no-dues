@@ -18,8 +18,7 @@ from app.core.security import (
     verify_password,
     create_access_token,
 )
-from app.schemas.auth import TokenWithUser
-from app.schemas.auth_student import StudentLoginResponse
+from app.schemas.auth import TokenWithUser, StudentLoginResponse
 from app.core.config import settings
 
 
@@ -72,6 +71,7 @@ async def create_user(
         "student_id": student_id,
         "department_id": department_id,
         "school_id": school_id,
+        "is_active": True
     }
 
     user = User(**user_data)
@@ -182,7 +182,7 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
 
 
 # ============================================================================
-# AUTHENTICATE STUDENT LOGIN (Robust Duplicate Handling)
+# AUTHENTICATE STUDENT LOGIN (Robust Duplicate Handling & School Name Fix)
 # ============================================================================
 async def authenticate_student(
     session: AsyncSession,
@@ -193,11 +193,16 @@ async def authenticate_student(
     identifier = identifier.strip()
 
     # 1. Fetch Student (Handle duplicates gracefully)
-    query = select(Student).where(
-        or_(
-            Student.enrollment_number.ilike(identifier),
-            Student.roll_number.ilike(identifier),
-            Student.email.ilike(identifier)
+    # ✅ FIX: Eager load School here so it's available in the response immediately
+    query = (
+        select(Student)
+        .options(selectinload(Student.school)) 
+        .where(
+            or_(
+                Student.enrollment_number.ilike(identifier),
+                Student.roll_number.ilike(identifier),
+                Student.email.ilike(identifier)
+            )
         )
     )
     result = await session.execute(query)
@@ -248,12 +253,17 @@ async def authenticate_student(
         }
     )
 
+    # ✅ FIX: Manually inject school_name into the response dict
+    # This bypasses Pydantic stripping the relationship field
+    student_dict = student.model_dump()
+    student_dict["school_name"] = student.school.name if student.school else "Unknown School"
+
     return StudentLoginResponse(
         access_token=token,
         token_type="bearer",
         user_id=user.id,
         student_id=student.id,
-        student=student,
+        student=student_dict, # Pass the enriched dictionary
     )
 
 
