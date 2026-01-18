@@ -2,12 +2,16 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select, or_
+from sqlalchemy.orm import selectinload # <--- Required for the fix
 import hashlib
 
 from app.api.deps import get_db_session
 from app.core.config import settings
 from app.core.rate_limiter import limiter 
 from app.core.security import create_access_token
+from app.models.student import Student
+from app.models.user import User
 
 # Schemas
 from app.schemas.auth import (
@@ -17,7 +21,7 @@ from app.schemas.auth import (
 )
 
 # Services
-from app.services.auth_service import authenticate_student
+from app.services.auth_service import authenticate_student, get_user_by_email
 from app.services.student_service import register_student_and_user
 from app.services.email_service import send_welcome_email
 
@@ -29,12 +33,9 @@ router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
 def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
     if not user_input or not hash_from_frontend:
         return False
-    
-    # Re-calculate hash to verify
     normalized = user_input.strip().upper()
     raw_str = f"{normalized}{settings.SECRET_KEY}"
     calculated_hash = hashlib.sha256(raw_str.encode()).hexdigest()
-    
     return calculated_hash == hash_from_frontend
 
 
@@ -42,24 +43,57 @@ def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
 # 1. STUDENT REGISTRATION (Public)
 # ----------------------------------------------------------------
 @router.post("/register", response_model=StudentLoginResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")  # Rate Limit protection
+@limiter.limit("5/minute") 
 async def register_student(
-    request: Request, # Required for limiter
+    request: Request,
     data: StudentRegisterRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session)
 ):
     """
-    Registers a new student, creates a User account, sends a welcome email,
-    and returns an access token immediately (Auto-Login).
+    Registers a new student, creates a User account, and auto-logins.
     """
     
-    # 1. Registration Logic (Service handles duplicate checks)
+    # 1. Manual Duplicate Check (Fail Fast)
+    query = select(Student).where(
+        or_(
+            Student.email == data.email,
+            Student.roll_number == data.roll_number,
+            Student.enrollment_number == data.enrollment_number
+        )
+    )
+    result = await session.execute(query)
+    existing = result.scalars().first()
+    
+    if existing:
+        if existing.email == data.email:
+            raise HTTPException(400, "Email already registered.")
+        if existing.roll_number == data.roll_number:
+            raise HTTPException(400, "Roll Number already registered.")
+        if existing.enrollment_number == data.enrollment_number:
+            raise HTTPException(400, "Enrollment Number already registered.")
+
+    # 2. Perform Registration
     try:
-        # Note: We map StudentRegisterRequest (Auth Schema) to the service
-        student = await register_student_and_user(session, data)
+        # This saves to DB
+        created_student = await register_student_and_user(session, data)
         
-        # 2. Send Welcome Email
+        # 3. ✅ CRITICAL FIX: Reload Student with School Data
+        # We must re-fetch the student with the relationship loaded to avoid 500 Error
+        refresh_query = (
+            select(Student)
+            .options(selectinload(Student.school))
+            .where(Student.id == created_student.id)
+        )
+        refresh_res = await session.execute(refresh_query)
+        student = refresh_res.scalar_one()
+
+        # 4. Fetch User for Token
+        user = await get_user_by_email(session, student.email)
+        if not user:
+            raise HTTPException(500, "Account created but user link failed.")
+
+        # 5. Send Email
         email_data = {
             "full_name": student.full_name,
             "enrollment_number": student.enrollment_number,
@@ -68,16 +102,7 @@ async def register_student(
         }
         background_tasks.add_task(send_welcome_email, email_data)
 
-        # 3. Fetch Linked User to Generate Token
-        # We know the user exists because the service just created it.
-        # But we need the ID for the token subject.
-        from app.services.auth_service import get_user_by_email
-        user = await get_user_by_email(session, student.email)
-        
-        if not user:
-            raise HTTPException(status_code=500, detail="User account creation failed unexpectedly.")
-
-        # 4. Generate Token (Auto-Login)
+        # 6. Generate Token
         access_token = create_access_token(
             subject=str(user.id),
             data={
@@ -87,8 +112,8 @@ async def register_student(
             }
         )
 
-        # 5. Prepare Response
-        # We manually inject school_name since Pydantic strips relations by default
+        # 7. Prepare Response
+        # Now 'student.school' is loaded, so .name won't crash the server
         student_dict = student.model_dump()
         student_dict["school_name"] = student.school.name if student.school else "Unknown School"
 
@@ -101,7 +126,6 @@ async def register_student(
         }
 
     except ValueError as e:
-        # Catch duplicates or validation errors from service
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -126,10 +150,9 @@ async def student_login_endpoint(
     auth = await authenticate_student(session, data.identifier, data.password)
 
     if not auth:
-        # Updated error message to match UI (Roll No / Enrollment No only)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid credentials. Please check your Roll Number or Enrollment Number and password."
+            detail="Invalid credentials. Please check your Roll No / Enrollment No and password."
         )
 
     return auth
