@@ -1,16 +1,18 @@
 # app/schemas/auth.py
 
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, Any
 from uuid import UUID
 
 from app.models.user import UserRole
+# Keeping these imports if needed by other parts of the app, 
+# though we define custom schemas below for specific auth needs.
 from app.schemas.user import UserRead
 from app.schemas.student import StudentRead
 
 
 # -------------------------------------------------------------------
-# LOGIN REQUEST (Admin/Staff/Dean) - [FIXED]
+# LOGIN REQUEST (Admin/Staff/Dean)
 # -------------------------------------------------------------------
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -30,7 +32,7 @@ class LoginRequest(BaseModel):
 
 
 # -------------------------------------------------------------------
-# REGISTER REQUEST  
+# REGISTER REQUEST (For Staff/Deans)
 # -------------------------------------------------------------------
 class RegisterRequest(BaseModel):
     name: str
@@ -49,14 +51,14 @@ class RegisterRequest(BaseModel):
                     "name": "Staff User",
                     "email": "staff@example.com",
                     "password": "password123",
-                    "role": "Staff",
+                    "role": "staff",
                     "department_id": 3
                 },
                 {
                     "name": "Dean User",
                     "email": "dean@example.com",
                     "password": "password123",
-                    "role": "Dean",
+                    "role": "dean",
                     "school_id": 1
                 }
             ]
@@ -88,8 +90,9 @@ class TokenWithUser(Token):
 
 
 # -------------------------------------------------------------------
-# STUDENT LOGIN REQUEST
+# STUDENT AUTH SCHEMAS
 # -------------------------------------------------------------------
+
 class StudentLoginRequest(BaseModel):
     identifier: str
     password: str
@@ -97,18 +100,66 @@ class StudentLoginRequest(BaseModel):
     captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
 
 
-# -------------------------------------------------------------------
-# STUDENT LOGIN RESPONSE
-# -------------------------------------------------------------------
+# Custom Schema to ensure school_name is sent to frontend
+class StudentWithSchool(BaseModel):
+    id: UUID
+    full_name: str
+    email: str
+    roll_number: str
+    enrollment_number: str
+    mobile_number: Optional[str] = None
+    school_id: Optional[int] = None
+    school_name: Optional[str] = None
+    
+    # Profile Fields
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
+    admission_year: Optional[int] = None
+    gender: Optional[str] = None
+    batch: Optional[str] = None
+    section: Optional[str] = None
+    admission_type: Optional[str] = None
+    is_hosteller: bool = False
+    hostel_name: Optional[str] = None
+    hostel_room: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+        extra = "allow" # Allow extra fields if DB model changes
+
+
 class StudentLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: UUID
     student_id: UUID
-    student: StudentRead
+    student: StudentWithSchool # <--- Uses the fixed schema
 
     class Config:
         from_attributes = True
+
+
+# ✅ NEW: Student Registration Request (Was missing before)
+class StudentRegisterRequest(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str
+    roll_number: str
+    enrollment_number: str
+    mobile_number: str
+    school_id: int
+    
+    # Optional Profile Fields
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
+    admission_year: Optional[int] = None
+    gender: Optional[str] = None
+    batch: Optional[str] = None
+    section: Optional[str] = None
+    admission_type: Optional[str] = None
+    is_hosteller: bool = False
+    hostel_name: Optional[str] = None
+    hostel_room: Optional[str] = None
 
 
 # -------------------------------------------------------------------

@@ -1,21 +1,29 @@
 # app/api/endpoints/auth_student.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, or_
+from sqlalchemy.orm import selectinload
 import hashlib
 
 from app.api.deps import get_db_session
+from app.core.config import settings
+from app.core.rate_limiter import limiter 
+from app.core.security import create_access_token
 from app.models.student import Student
+from app.models.user import User
+
+# Schemas
 from app.schemas.auth import (
     StudentLoginRequest, 
     StudentLoginResponse, 
     StudentRegisterRequest
 )
-from app.services.auth_service import authenticate_student
-from app.core.security import get_password_hash, create_access_token
-from app.core.config import settings
-from app.core.rate_limiter import limiter 
+
+# Services
+from app.services.auth_service import authenticate_student, get_user_by_email
+from app.services.student_service import register_student_and_user
+from app.services.email_service import send_welcome_email
 
 router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
 
@@ -25,96 +33,109 @@ router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
 def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
     if not user_input or not hash_from_frontend:
         return False
-    
-    # Re-calculate hash to verify
     normalized = user_input.strip().upper()
     raw_str = f"{normalized}{settings.SECRET_KEY}"
     calculated_hash = hashlib.sha256(raw_str.encode()).hexdigest()
-    
     return calculated_hash == hash_from_frontend
 
 
 # ----------------------------------------------------------------
-# 1. STUDENT REGISTRATION (Prevents Duplicates)
+# 1. STUDENT REGISTRATION (Public)
 # ----------------------------------------------------------------
-@router.post("/register", response_model=StudentLoginResponse)
+@router.post("/register", response_model=StudentLoginResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute") 
 async def register_student(
-    payload: StudentRegisterRequest,
+    request: Request,
+    data: StudentRegisterRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session)
 ):
     """
-    Registers a new student.
-    checks Email, Roll Number, AND Enrollment Number for duplicates.
+    Registers a new student, creates a User account, and auto-logins.
     """
     
-    # ✅ ROBUST CHECK: Query all unique identifiers at once
+    # 1. Manual Duplicate Check (Fail Fast)
     query = select(Student).where(
         or_(
-            Student.email == payload.email,
-            Student.roll_number == payload.roll_number,
-            Student.enrollment_number == payload.enrollment_number
+            Student.email == data.email,
+            Student.roll_number == data.roll_number,
+            Student.enrollment_number == data.enrollment_number
         )
     )
     result = await session.execute(query)
-    existing_student = result.scalars().first()
+    existing = result.scalars().first()
+    
+    if existing:
+        if existing.email == data.email:
+            raise HTTPException(400, "Email already registered.")
+        if existing.roll_number == data.roll_number:
+            raise HTTPException(400, "Roll Number already registered.")
+        if existing.enrollment_number == data.enrollment_number:
+            raise HTTPException(400, "Enrollment Number already registered.")
 
-    if existing_student:
-        # Determine exactly which field caused the conflict
-        error_msg = "Account already exists."
-        if existing_student.email == payload.email:
-            error_msg = "Email is already registered. Please login."
-        elif existing_student.roll_number == payload.roll_number:
-            error_msg = f"Roll Number {payload.roll_number} is already registered."
-        elif existing_student.enrollment_number == payload.enrollment_number:
-            error_msg = f"Enrollment Number {payload.enrollment_number} is already registered."
-            
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
+    # 2. Perform Registration
+    try:
+        # This saves to DB
+        created_student = await register_student_and_user(session, data)
+        
+        # 3. CRITICAL FIX: Reload Student with School Data
+        # We must re-fetch the student with the relationship loaded to avoid 500 Error
+        refresh_query = (
+            select(Student)
+            .options(selectinload(Student.school))
+            .where(Student.id == created_student.id)
+        )
+        refresh_res = await session.execute(refresh_query)
+        student = refresh_res.scalar_one()
+
+        # 4. Fetch User for Token
+        user = await get_user_by_email(session, student.email)
+        if not user:
+            raise HTTPException(500, "Account created but user link failed.")
+
+        # 5. Send Email
+        email_data = {
+            "full_name": student.full_name,
+            "enrollment_number": student.enrollment_number,
+            "roll_number": student.roll_number,
+            "email": student.email
+        }
+        background_tasks.add_task(send_welcome_email, email_data)
+
+        # 6. Generate Token
+        access_token = create_access_token(
+            subject=str(user.id),
+            data={
+                "role": "student",
+                "student_id": str(student.id),
+                "school_id": student.school_id
+            }
         )
 
-    # Create Student Record
-    new_student = Student(
-        full_name=payload.full_name,
-        email=payload.email,
-        roll_number=payload.roll_number,
-        enrollment_number=payload.enrollment_number,
-        mobile_number=payload.mobile_number,
-        school_id=payload.school_id,
-        password_hash=get_password_hash(payload.password),
-        
-        # Default Profile Fields
-        father_name=payload.father_name,
-        gender=payload.gender,
-        batch=payload.batch,
-        is_active=True
-    )
+        # 7. Prepare Response
+        # Now 'student.school' is loaded, so .name won't crash the server
+        student_dict = student.model_dump()
+        student_dict["school_name"] = student.school.name if student.school else "Unknown School"
 
-    session.add(new_student)
-    await session.commit()
-    await session.refresh(new_student)
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "student_id": student.id,
+            "student": student_dict
+        }
 
-    # Auto-login after registration
-    access_token = create_access_token(
-        subject=str(new_student.id),
-        role="student",
-        name=new_student.full_name
-    )
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "student": new_student
-    }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ----------------------------------------------------------------
 # 2. STUDENT LOGIN
 # ----------------------------------------------------------------
 @router.post("/login", response_model=StudentLoginResponse)
-@limiter.limit("5/minute")  # Rate Limit: Max 5 login attempts per minute per IP
+@limiter.limit("5/minute") 
 async def student_login_endpoint(
-    request: Request,  # Required for limiter
+    request: Request, 
     data: StudentLoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -122,16 +143,16 @@ async def student_login_endpoint(
     if not verify_captcha_hash(data.captcha_input, data.captcha_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Invalid CAPTCHA code."
+            detail="Invalid CAPTCHA code. Please refresh and try again."
         )
 
-    # 2. Auth Logic (Handles password verification)
+    # 2. Auth Logic
     auth = await authenticate_student(session, data.identifier, data.password)
 
     if not auth:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid credentials. Please check your Roll No / Email and password."
+            detail="Invalid credentials. Please check your Roll No / Enrollment No and password."
         )
 
     return auth

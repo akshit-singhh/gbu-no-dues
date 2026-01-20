@@ -53,6 +53,7 @@ from app.services.auth_service import (
 from app.services.student_service import list_students
 
 # Deps
+# ✅ UPDATED: Imported require_admin instead of require_super_admin
 from app.api.deps import get_db_session, get_current_user, require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["Auth (Admin)"])
@@ -202,9 +203,9 @@ async def delete_department(
 
 
 # -------------------------------------------------------------------
-# REGISTER ADMIN (Renamed for Clarity, kept logic)
+# REGISTER SUPER ADMIN (Renamed for Clarity, kept logic)
 # -------------------------------------------------------------------
-@router.post("/register-admin", response_model=UserRead)
+@router.post("/register-super-admin", response_model=UserRead)
 async def register_admin_account(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),
@@ -236,10 +237,10 @@ async def register_admin_account(
 async def register_user(
     data: RegisterRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     if data.role == UserRole.Admin:
-        raise HTTPException(400, detail="Use /register-admin for Admin accounts.")
+        raise HTTPException(400, detail="Use /register-super-admin for Admin accounts.")
 
     existing = await get_user_by_email(session, data.email)
     if existing:
@@ -275,7 +276,7 @@ async def register_user(
 async def get_all_users(
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     # Construct query with specific load options to ensure Pydantic has data
     query = select(User)
@@ -305,7 +306,7 @@ async def get_all_users(
 async def remove_user(
     user_id: UUID,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     try:
         await delete_user_by_id(session, str(user_id))
@@ -318,7 +319,7 @@ async def update_user_endpoint(
     user_id: str,
     data: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     # Validation
     if data.role == UserRole.Staff and not data.department_id:
@@ -433,7 +434,7 @@ async def get_audit_logs(
     actor_role: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
     if action:
@@ -450,7 +451,7 @@ async def get_audit_logs(
 @router.get("/dashboard-stats")
 async def get_dashboard_stats(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     # 1. General Application Counts
     status_query = select(Application.status, func.count(Application.id)).group_by(Application.status)
@@ -497,7 +498,7 @@ async def admin_global_search(
     request: Request, # <--- Required for limiter
     q: str = Query(..., min_length=3),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     term = f"%{q.lower()}%"
     
@@ -577,7 +578,7 @@ async def admin_global_search(
 @router.get("/analytics/performance")
 async def get_department_performance(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     """
     Returns performance stats grouped by Department.
@@ -648,7 +649,7 @@ async def get_department_performance(
 @router.get("/reports/export-cleared")
 async def export_cleared_students(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # Admin only
+    _: User = Depends(require_admin), # ✅ Admin only
 ):
     query = (
         select(Application, Student, School, Certificate)

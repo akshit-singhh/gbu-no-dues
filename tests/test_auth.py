@@ -24,7 +24,7 @@ async def test_admin_login_flow(client, db_session):
     # ✅ FIX: Use 'password_hash' to match DB column exactly
     admin_user = User(
         email=unique_email,
-        name="Super Admin",
+        name="Admin",
         password_hash=get_password_hash(plain_password), 
         role=UserRole.Admin,
         is_active=True
