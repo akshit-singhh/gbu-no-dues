@@ -62,7 +62,8 @@ class ApplicationCreate(BaseModel):
 class ApplicationResubmit(BaseModel):
     # Application fixes
     remarks: Optional[str] = None
-    proof_document_url: Optional[str] = None 
+
+    proof_document_url: Optional[str] = None
 
     # Profile fixes (Optional)
     father_name: Optional[str] = None
@@ -111,7 +112,10 @@ class ApplicationRead(BaseModel):
     
     # Correct handling of optional DB fields
     current_stage_order: int = 1
+    
+    # Official Rejection/Approval Remarks
     remarks: Optional[str] = None
+
     
     created_at: datetime
     updated_at: datetime

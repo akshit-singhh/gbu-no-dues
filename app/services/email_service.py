@@ -216,3 +216,34 @@ async def send_reset_password_email(data: dict):
         "Password Reset OTP - GBU No Dues",
         html_content
     )
+
+
+# ---------------------------------------------------------
+# 6. PENDING REMINDER EMAIL (For Verifiers)
+# ---------------------------------------------------------
+async def send_pending_reminder_email(
+    verifier_name: str,
+    verifier_email: str,
+    pending_count: int,
+    department_name: str
+):
+    """
+    Sends a reminder to a Department/Verifier about overdue applications.
+    Uses 'pending_reminder.html' template.
+    """
+    template = get_template('pending_reminder.html')
+
+    context = {
+        "verifier_name": verifier_name,
+        "pending_count": pending_count,
+        "department_name": department_name,
+        "dashboard_url": f"{settings.FRONTEND_URL}/login"
+    }
+
+    html_content = template.render(context)
+
+    await send_email_async(
+        verifier_email,
+        f"⚠️ Action Required: {pending_count} Pending Applications",
+        html_content
+    )

@@ -9,7 +9,6 @@ from sqlmodel import select
 from uuid import UUID
 from typing import Any
 
-
 from app.api.deps import get_db_session, get_application_or_404
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
@@ -309,7 +308,8 @@ async def get_application_status(
             "current_stage_order": app.current_stage_order,
             "created_at": app.created_at,
             "updated_at": app.updated_at,
-            "current_location": location_str 
+            "current_location": location_str,
+            "remarks": app.remarks, # ✅ Return existing/approver remarks
         },
         "stages": stages_data,
         "flags": {

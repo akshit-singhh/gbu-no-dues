@@ -41,7 +41,10 @@ class Application(SQLModel, table=True):
     student_id: UUID = Field(foreign_key="students.id", nullable=False)
     
     status: str = Field(default=ApplicationStatus.PENDING.value)
+    
+    # Official remarks from Approvers (e.g. "Rejected due to missing fee")
     remarks: Optional[str] = Field(default=None)
+
 
     #  Stores the internal path or Public URL for the uploaded PDF
     proof_document_url: Optional[str] = Field(default=None, nullable=True)

@@ -160,6 +160,9 @@ async def list_all_applications(
         return JSONResponse(status_code=200, content={"message": "No applications found.", "data": []})
 
     final_list = []
+    
+    # FIX: Get current time for calculating pending days
+    now = datetime.utcnow()
 
     for app, student in rows:
         # Location Logic
@@ -229,8 +232,21 @@ async def list_all_applications(
         row = stage_res.first() 
 
         active_stage_data = None
+        
+        # FIX: Variables to track overdue status
+        days_pending = 0
+        is_overdue = False
+
         if row:
             stage_obj, verifier_name = row
+            
+            # FIX: Calculate Days Pending for this specific stage
+            if stage_obj.status == "pending":
+                delta = now - stage_obj.created_at
+                days_pending = delta.days
+                if days_pending >= 7:
+                    is_overdue = True
+
             active_stage_data = {
                 "stage_id": stage_obj.id,
                 "status": stage_obj.status,
@@ -256,7 +272,10 @@ async def list_all_applications(
             "current_location": current_location_str,
             "created_at": app.created_at,
             "updated_at": app.updated_at,
-            "active_stage": active_stage_data
+            "active_stage": active_stage_data,
+            # ✅ FIX: Inject flags for Frontend Popup/Red Color
+            "days_pending": days_pending,
+            "is_overdue": is_overdue
         })
 
     return final_list
@@ -399,7 +418,7 @@ async def get_my_approval_history(
     return history_data
 
 # ===================================================================
-# ENRICHED DETAILS
+# ENRICHED DETAILS (For Approvers/Deans)
 # ===================================================================
 @router.get("/enriched/{application_id}")
 async def get_enriched_application_details(
@@ -409,6 +428,7 @@ async def get_enriched_application_details(
     ),
     session: AsyncSession = Depends(get_db_session),
 ):
+    # 1. Corrected SQL
     query_text = """
         SELECT
             a.id AS application_id,
@@ -417,7 +437,7 @@ async def get_enriched_application_details(
             a.current_stage_order,
             a.created_at,
             a.updated_at,
-            a.remarks AS application_remarks,
+            a.remarks AS application_remarks, 
             a.proof_document_url,
 
             s.full_name AS student_name,
@@ -448,6 +468,7 @@ async def get_enriched_application_details(
     
     params = {"app_id": app.id}
 
+    # Dean Security Check
     if current_user.role == UserRole.Dean:
         dean_school_id = getattr(current_user, 'school_id', None)
         if not dean_school_id:
@@ -467,6 +488,9 @@ async def get_enriched_application_details(
 
     response_dict = dict(data)
 
+    # ---------------------------------------------------------
+    # 2. Fetch the Active Stage (Contains Student's Remark)
+    # ---------------------------------------------------------
     stage_query = select(ApplicationStage).where(ApplicationStage.application_id == app.id)
     
     if current_user.role == UserRole.Dean:
@@ -486,7 +510,10 @@ async def get_enriched_application_details(
             "stage_id": my_stage.id,
             "status": my_stage.status,
             "sequence_order": my_stage.sequence_order,
-            "remarks": my_stage.comments
+            "remarks": my_stage.comments, 
+            
+            # This 'comments' field contains "Resubmission: [Student Note]"
+            "comments": my_stage.comments 
         }
     else:
         response_dict["actionable_stage"] = None
@@ -566,7 +593,7 @@ async def approve_stage_endpoint(
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        # ✅ CHECK: Use UserRole.Admin only
+        # CHECK: Use UserRole.Admin only
         is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:
@@ -723,7 +750,7 @@ async def admin_override_stage_action(
     payload: AdminOverrideRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    # ✅ Require 'admin' role directly
+    # Require 'admin' role directly
     current_user: User = Depends(AllowRoles(UserRole.Admin)), 
 ):
     # 1. Fetch Stage

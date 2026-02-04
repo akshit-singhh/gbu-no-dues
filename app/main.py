@@ -23,7 +23,6 @@ from app.core.database import test_connection, init_db, AsyncSessionLocal
 from app.core.config import settings
 from app.services.auth_service import get_user_by_email, create_user
 from app.models.user import UserRole
-from app.api.endpoints import utils
 
 # Routers
 from app.api.endpoints import (
@@ -36,6 +35,8 @@ from app.api.endpoints import (
     approvals as approvals_router,
     verification as verification_router,
     captcha as captcha_router,
+    utils as utils_router,
+    jobs as jobs_router
 )
 
 # ------------------------------------------------------------
@@ -76,7 +77,6 @@ async def lifespan(app: FastAPI):
         raise
 
     # 2. Seed System Admin
-    # ✅ FIX: Updated to use ADMIN_EMAIL/PASSWORD from your new config
     try:
         async with AsyncSessionLocal() as session:
             if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
                         name=settings.ADMIN_NAME or "System Admin",
                         email=settings.ADMIN_EMAIL,
                         password=settings.ADMIN_PASSWORD,
-                        role=UserRole.Admin, # Assigns the new unified Admin role
+                        role=UserRole.Admin, 
                     )
                     logger.success("System Admin created successfully.")
                 else:
@@ -216,7 +216,8 @@ async def metrics():
 # ------------------------------------------------------------
 # CORS CONFIGURATION
 # ------------------------------------------------------------
-frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")]
+# Handle cases where config might be empty strings
+frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")] if settings.FRONTEND_URLS else ["*"]
 frontend_regex = settings.FRONTEND_REGEX or None
 
 app.add_middleware(
@@ -240,7 +241,8 @@ app.include_router(applications_router.router)
 app.include_router(approvals_router.router)
 app.include_router(verification_router.router)
 app.include_router(captcha_router.router)
-app.include_router(utils.router)
+app.include_router(utils_router.router)
+app.include_router(jobs_router.router)
 
 # ------------------------------------------------------------
 # ROOT HEALTH CHECK

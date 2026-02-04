@@ -41,10 +41,10 @@ class Settings(BaseSettings):
     # FRONTEND / CORS CONFIGURATION
     # ------------------------------------------------------------
     
-    # ✅ 1. For Email Links (Single Base URL) - Fixes AttributeError
+    # 1. For Email Links (Single Base URL) - Fixes AttributeError
     FRONTEND_URL: str = "http://localhost:5173"
 
-    # ✅ 2. For CORS Middleware (Comma-separated list)
+    # 2. For CORS Middleware (Comma-separated list)
     # Example: "https://myapp.vercel.app,http://localhost:5173"
     FRONTEND_URLS: str = "http://localhost:5173"
 
