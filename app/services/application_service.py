@@ -4,6 +4,7 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from fastapi import HTTPException
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -15,25 +16,7 @@ from app.models.department import Department
 from app.models.user import UserRole
 from app.schemas.application import ApplicationCreate
 from app.core.config import settings
-
-# ---------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------
-
-DEFAULT_STAGES = [
-    # Dean is special (linked to School, not Department table)
-    {"role": UserRole.Dean,     "order": 1, "name": "School Dean"}, 
-    
-    # Parallel Stages (Order 2)
-    {"role": UserRole.Library,  "order": 2, "name": "Library"},
-    {"role": UserRole.Hostel,   "order": 2, "name": "Hostel"},
-    {"role": UserRole.Sports,   "order": 2, "name": "Sports"},
-    {"role": UserRole.Lab,      "order": 2, "name": "Laboratories"},
-    {"role": UserRole.CRC,      "order": 2, "name": "CRC"},
-    
-    # Final Stage (Order 3)
-    {"role": UserRole.Account,  "order": 3, "name": "Accounts"}
-]
+from loguru import logger
 
 async def create_application_for_student(
     session: AsyncSession,
@@ -41,8 +24,9 @@ async def create_application_for_student(
     payload: ApplicationCreate
 ) -> Application:
 
-    # 1. Fetch Student, School & Departments
-    # We use selectinload to fetch the School relationship efficiently
+    # ---------------------------------------------------------
+    # 1. Fetch Student & Pre-load School
+    # ---------------------------------------------------------
     stmt = (
         select(Student)
         .where(Student.id == student_id)
@@ -54,15 +38,41 @@ async def create_application_for_student(
     if not student:
         raise ValueError("Student not found")
 
-    # Fetch all departments to create a lookup map
-    # This creates a dictionary: { "library": 1, "hostel": 2, ... }
-    dept_res = await session.execute(select(Department))
-    all_depts = dept_res.scalars().all()
-    
-    # We use lowercase keys for safe matching
-    dept_map = {d.name.lower(): d.id for d in all_depts}
+    # ---------------------------------------------------------
+    # 2. Resolve Academic Department Code -> ID
+    # ---------------------------------------------------------
+    if payload.department_code:
+        dept_res = await session.execute(
+            select(Department).where(Department.code == payload.department_code.upper())
+        )
+        academic_dept = dept_res.scalar_one_or_none()
+        
+        if not academic_dept:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid Academic Department Code: {payload.department_code}"
+            )
+        
+        student.department_id = academic_dept.id
+    else:
+        if not student.department_id:
+             raise HTTPException(
+                status_code=400, 
+                detail="Academic Department is required."
+            )
 
-    # 2. Check for existing active application
+    # ---------------------------------------------------------
+    # 3. Validate Prerequisites
+    # ---------------------------------------------------------
+    if not student.school_id:
+        raise ValueError("Student has no School assigned (Required for Dean/Office step).")
+    
+    if not student.department_id:
+        raise ValueError("Student has no Academic Department assigned (Required for HOD step).")
+
+    # ---------------------------------------------------------
+    # 4. Check for Existing Active Application
+    # ---------------------------------------------------------
     existing_app_q = await session.execute(
         select(Application)
         .where(Application.student_id == student.id)
@@ -77,7 +87,9 @@ async def create_application_for_student(
         if current_status == ApplicationStatus.COMPLETED.value:
             raise ValueError("You have already received your No Dues certificate.")
 
-    # 3. Update Student Fields
+    # ---------------------------------------------------------
+    # 5. Update Student Profile Fields
+    # ---------------------------------------------------------
     student.father_name = payload.father_name
     student.mother_name = payload.mother_name
     student.gender = payload.gender
@@ -87,7 +99,6 @@ async def create_application_for_student(
     student.domicile = payload.domicile
     
     student.section = payload.section
-    student.batch = payload.batch
     student.admission_year = payload.admission_year
     student.admission_type = payload.admission_type
     
@@ -101,13 +112,16 @@ async def create_application_for_student(
 
     session.add(student)
 
-    # 4. Create Main Application
+    # ---------------------------------------------------------
+    # 6. Create Main Application
+    # ---------------------------------------------------------
     app = Application(
         id=uuid.uuid4(),
         student_id=student.id,
         status=ApplicationStatus.PENDING.value,
-        current_stage_order=1, 
+        current_stage_order=1,  # Starts at Level 1 (Dean)
         remarks=payload.remarks, 
+        student_remarks=payload.student_remarks,
         proof_document_url=payload.proof_document_url,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow()
@@ -115,53 +129,104 @@ async def create_application_for_student(
     session.add(app)
     await session.flush() 
 
-    # 5. Generate Stages (With Dynamic Logic)
-    for stage_info in DEFAULT_STAGES:
-        role = stage_info["role"]
-        
-        #  RULE 1: Skip Hostel if not hosteller
-        if role == UserRole.Hostel and not student.is_hosteller:
+    # ---------------------------------------------------------
+    # 7. GENERATE STAGES (FLOWCHART B: 9 STAGES)
+    # Sequence: Dean(1) -> HOD(2) -> Office(3) -> Admin(4) -> Accounts(5)
+    # ---------------------------------------------------------
+    
+    # Fetch ALL Departments 
+    dept_res = await session.execute(select(Department))
+    all_depts = dept_res.scalars().all()
+    
+    stages_to_create = []
+
+    # --- NODE 1: SCHOOL DEAN (Seq 1) ---
+    stages_to_create.append(ApplicationStage(
+        id=uuid.uuid4(),
+        application_id=app.id,
+        school_id=student.school_id,   
+        verifier_role=UserRole.Dean,   
+        sequence_order=1, 
+        status=ApplicationStatus.PENDING.value,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    ))
+
+    # --- NODE 2: HOD (Seq 2) ---
+    stages_to_create.append(ApplicationStage(
+        id=uuid.uuid4(),
+        application_id=app.id,
+        department_id=student.department_id, # Academic Dept ID
+        verifier_role=UserRole.HOD,          
+        sequence_order=2,
+        status=ApplicationStatus.PENDING.value,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    ))
+
+    # --- NODE 3: SCHOOL OFFICE (Seq 3) ---
+    #nAdded specific node for School Office (Staff Role + School ID)
+    stages_to_create.append(ApplicationStage(
+        id=uuid.uuid4(),
+        application_id=app.id,
+        school_id=student.school_id,    
+        verifier_role=UserRole.Staff,   
+        sequence_order=3,
+        status=ApplicationStatus.PENDING.value,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    ))
+
+    # --- NODE 4: ADMINISTRATIVE DEPTS (Seq 4) ---
+    # Fetch Phase 2 Depts (LIB, SPT, HST, CRC, LAB)
+    admin_depts = [d for d in all_depts if d.phase_number == 2]
+    
+    if not admin_depts:
+        logger.warning("⚠️ No Phase 2 (Admin) Departments found in DB. Admin stages skipped.")
+
+    for dept in admin_depts:
+        # Check Exemption: Skip "Laboratories" if School is exempt
+        if dept.code == "LAB" and student.school and student.school.code in settings.SCHOOLS_WITHOUT_LABS:
+            continue
+            
+        # Check Exemption: Skip "Hostel" if student is NOT a hosteller
+        if dept.code == "HST" and not payload.is_hosteller:
             continue
 
-        #  RULE 2: Skip Lab if School is Exempt (e.g. Management/Law)
-        # We check the School Code (e.g. "SOM") against our Config Set
-        if role == UserRole.Lab:
-            if student.school and student.school.code in settings.SCHOOLS_WITHOUT_LABS:
-                # Skip creating this stage entirely
-                continue
-
-        stage_school_id = None
-        stage_dept_id = None 
-
-        # Logic A: Dean uses School ID
-        if role == UserRole.Dean:
-            stage_school_id = student.school_id
-        
-        # Logic B: Everyone else uses Department ID from the map
-        else:
-            config_name = stage_info["name"].lower() # e.g., "library"
-            if config_name in dept_map:
-                stage_dept_id = dept_map[config_name] # e.g., 1
-            else:
-                print(f"⚠️ Warning: No Department found for '{stage_info['name']}'")
-
-        stage = ApplicationStage(
+        stages_to_create.append(ApplicationStage(
             id=uuid.uuid4(),
             application_id=app.id,
-            verifier_role=role.value if hasattr(role, "value") else role,
-            sequence_order=stage_info["order"],
+            department_id=dept.id,      
+            verifier_role=UserRole.Staff, 
+            sequence_order=4,
             status=ApplicationStatus.PENDING.value,
-            
-            # Populate Relationships
-            school_id=stage_school_id, 
-            department_id=stage_dept_id, 
-            
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
-        )
-        session.add(stage)
+        ))
 
-    # 6. Commit
+    # --- NODE 5: ACCOUNTS (Seq 5) ---
+    accounts_dept = next((d for d in all_depts if d.code == "ACC"), None)
+    
+    if accounts_dept:
+        stages_to_create.append(ApplicationStage(
+            id=uuid.uuid4(),
+            application_id=app.id,
+            department_id=accounts_dept.id,
+            verifier_role=UserRole.Staff,
+            sequence_order=5,
+            status=ApplicationStatus.PENDING.value,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        ))
+    else:
+        logger.warning("⚠️ Accounts Department (ACC) not found. Final stage skipped.")
+
+    # Add all stages to session
+    session.add_all(stages_to_create)
+
+    # ---------------------------------------------------------
+    # 8. Commit Transaction
+    # ---------------------------------------------------------
     try:
         await session.commit()
         await session.refresh(app)
@@ -169,11 +234,11 @@ async def create_application_for_student(
 
     except IntegrityError as e:
         await session.rollback()
-        print(f"Database Integrity Error: {e}") 
+        logger.error(f"Database Integrity Error: {e}") 
         raise ValueError("Failed to create application due to data conflict.")
     except Exception as e:
         await session.rollback()
-        print(f"Unexpected Error: {e}")
+        logger.error(f"Unexpected Error: {e}")
         raise e
 
 async def get_application_by_student(session: AsyncSession, student_id: uuid.UUID) -> Optional[Application]:

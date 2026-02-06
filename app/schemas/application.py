@@ -1,12 +1,10 @@
-# app/schemas/application.py
-
 from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from uuid import UUID
 from datetime import date, datetime
 
 # ============================================================
-# 1. SHARED BASE (For partial updates/reading)
+# 1. SHARED BASE
 # ============================================================
 class StudentBase(BaseModel):
     father_name: Optional[str] = None
@@ -22,19 +20,15 @@ class StudentBase(BaseModel):
     
     model_config = ConfigDict(from_attributes=True)
 
-
 # ============================================================
 # 2. APPLICATION CREATE (POST)
-#    - Includes Proof URL (from Supabase)
-#    - Includes Remarks
-#    - Includes Profile Fields (to sync with Student Profile)
 # ============================================================
 class ApplicationCreate(BaseModel):
-    # --- NEW: Application Specifics ---
-    proof_document_url: str  # The public URL returned from /api/utils/upload-proof
+    proof_document_url: str
     remarks: Optional[str] = None
+    student_remarks: Optional[str] = None 
 
-    # --- Profile Details (Mandatory for No Dues) ---
+    # --- Profile Details ---
     father_name: str
     mother_name: str
     gender: str
@@ -43,6 +37,9 @@ class ApplicationCreate(BaseModel):
     permanent_address: str
     domicile: str
     
+    # REQUIRED: Use Code (e.g., "CSE")
+    department_code: str
+    
     # --- Hostel Info ---
     is_hosteller: bool
     hostel_name: Optional[str] = None
@@ -50,22 +47,21 @@ class ApplicationCreate(BaseModel):
 
     # --- Academic Details ---
     section: Optional[str] = None
-    batch: str             # e.g., "2021-2025"
-    admission_year: int    # e.g., 2021
-    admission_type: str    # e.g., "Regular"
-
+    admission_year: int
+    admission_type: str
 
 # ============================================================
 # 3. APPLICATION RESUBMIT (PATCH)
-#    - Allows fixing Proof, Remarks, AND Student Profile Typos
 # ============================================================
 class ApplicationResubmit(BaseModel):
-    # Application fixes
     remarks: Optional[str] = None
-
+    student_remarks: Optional[str] = None
     proof_document_url: Optional[str] = None
 
-    # Profile fixes (Optional)
+    # Allow fixing Department via Code
+    department_code: Optional[str] = None
+
+    # Profile fixes
     father_name: Optional[str] = None
     mother_name: Optional[str] = None
     gender: Optional[str] = None
@@ -74,49 +70,32 @@ class ApplicationResubmit(BaseModel):
     permanent_address: Optional[str] = None
     domicile: Optional[str] = None
     
-    # Hostel fixes (Common reason for rejection)
     is_hosteller: Optional[bool] = None
     hostel_name: Optional[str] = None
     hostel_room: Optional[str] = None
 
-    # Academic fixes
     section: Optional[str] = None
-    batch: Optional[str] = None
     admission_year: Optional[int] = None
     admission_type: Optional[str] = None
 
-
 # ============================================================
-# 4. STUDENT UPDATE (PATCH) -> NESTED Structure
+# 4. STUDENT UPDATE / READ
 # ============================================================
-# A. The inner data (Just the personal edits)
 class StudentUpdateData(StudentBase):
     pass 
 
-# B. The Wrapper to match { "student_update": { ... } }
 class StudentUpdateWrapper(BaseModel):
     student_update: StudentUpdateData
 
-
-# ============================================================
-# 5. APPLICATION READ (Admin / Status)
-# ============================================================
 class ApplicationRead(BaseModel):
     id: UUID
     display_id: Optional[str] = None
     student_id: UUID
     status: str
-    
-    # Include the proof URL in the response
     proof_document_url: Optional[str] = None
-    
-    # Correct handling of optional DB fields
     current_stage_order: int = 1
-    
-    # Official Rejection/Approval Remarks
     remarks: Optional[str] = None
-
-    
+    student_remarks: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

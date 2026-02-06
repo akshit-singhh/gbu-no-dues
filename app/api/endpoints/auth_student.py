@@ -21,8 +21,7 @@ from app.schemas.auth import (
 )
 
 # Services
-from app.services.auth_service import authenticate_student, get_user_by_email
-from app.services.student_service import register_student_and_user
+from app.services.auth_service import authenticate_student, get_user_by_email, register_student as register_student_service
 from app.services.email_service import send_welcome_email
 
 router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
@@ -54,31 +53,19 @@ async def register_student(
     Registers a new student, creates a User account, and auto-logins.
     """
     
-    # 1. Manual Duplicate Check (Fail Fast)
-    query = select(Student).where(
-        or_(
-            Student.email == data.email,
-            Student.roll_number == data.roll_number,
-            Student.enrollment_number == data.enrollment_number
+    # 1. CAPTCHA Verification
+    if not verify_captcha_hash(data.captcha_input, data.captcha_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Invalid CAPTCHA code. Please refresh and try again."
         )
-    )
-    result = await session.execute(query)
-    existing = result.scalars().first()
-    
-    if existing:
-        if existing.email == data.email:
-            raise HTTPException(400, "Email already registered.")
-        if existing.roll_number == data.roll_number:
-            raise HTTPException(400, "Roll Number already registered.")
-        if existing.enrollment_number == data.enrollment_number:
-            raise HTTPException(400, "Enrollment Number already registered.")
 
     # 2. Perform Registration
     try:
-        # This saves to DB
-        created_student = await register_student_and_user(session, data)
+        # Call the service in auth_service.py
+        created_student = await register_student_service(session, data)
         
-        # 3. CRITICAL FIX: Reload Student with School Data
+        # 3. Reload Student with School Data (Critical for Response)
         # We must re-fetch the student with the relationship loaded to avoid 500 Error
         refresh_query = (
             select(Student)
@@ -88,12 +75,12 @@ async def register_student(
         refresh_res = await session.execute(refresh_query)
         student = refresh_res.scalar_one()
 
-        # 4. Fetch User for Token
+        # 4. Fetch User for Token (User ID needed for Subject)
         user = await get_user_by_email(session, student.email)
         if not user:
             raise HTTPException(500, "Account created but user link failed.")
 
-        # 5. Send Email
+        # 5. Send Welcome Email (Background Task)
         email_data = {
             "full_name": student.full_name,
             "enrollment_number": student.enrollment_number,
@@ -102,7 +89,7 @@ async def register_student(
         }
         background_tasks.add_task(send_welcome_email, email_data)
 
-        # 6. Generate Token
+        # 6. Generate Access Token (Auto-Login)
         access_token = create_access_token(
             subject=str(user.id),
             data={
@@ -113,7 +100,7 @@ async def register_student(
         )
 
         # 7. Prepare Response
-        # Now 'student.school' is loaded, so .name won't crash the server
+        # Safely extract school name
         student_dict = student.model_dump()
         student_dict["school_name"] = student.school.name if student.school else "Unknown School"
 
@@ -127,6 +114,9 @@ async def register_student(
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Fallback for unexpected errors
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 
 # ----------------------------------------------------------------

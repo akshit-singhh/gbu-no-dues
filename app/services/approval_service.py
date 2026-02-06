@@ -4,7 +4,7 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 from uuid import UUID
-from loguru import logger  # IMPROVEMENT: Use Logger instead of print
+from loguru import logger 
 
 from app.models.application import Application, ApplicationStatus
 from app.models.application_stage import ApplicationStage
@@ -150,22 +150,60 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
         raise ValueError("Reviewer user not found")
 
     # ---------------------------------------------------------
-    # PERMISSION CHECKS
+    # PERMISSION CHECKS (Updated for Flow B)
     # ---------------------------------------------------------
+    
+    # 1. ADMIN (God Mode)
     if reviewer.role == UserRole.Admin:
         pass 
+
+    # 2. DEAN (School Check)
     elif reviewer.role == UserRole.Dean:
         if not getattr(reviewer, 'school_id', None):
              raise ValueError("Your Dean account has no School assigned.")
+        # Deans verify stages linked to their School ID
+        # Note: We check student.school_id because the Dean stage is created with school_id
         if reviewer.school_id != student.school_id:
              raise ValueError("You are not the Dean of this student's school.")
-    elif reviewer.role == UserRole.Staff:
+
+    # 3. HOD (Department Check)
+    elif reviewer.role == UserRole.HOD:
         if not getattr(reviewer, 'department_id', None):
-             raise ValueError("Your Staff account has no Department assigned.")
+             raise ValueError("Your HOD account has no Department assigned.")
+        
+        # Check if the stage is actually for this department
+        # (This prevents CS HOD from approving ME stage if logic ever got mixed up)
         if not stage.department_id:
-             raise ValueError("Staff cannot approve generic stages.")
+             raise ValueError("This stage is not linked to any academic department.")
+        
         if reviewer.department_id != stage.department_id:
-             raise ValueError("You do not belong to the department for this stage.")
+             raise ValueError("You are not the HOD of this department.")
+
+    # 4. STAFF (Administrative Dept OR School Office)
+    elif reviewer.role == UserRole.Staff:
+        # A. School Office Staff (e.g., SOICT Office)
+        if getattr(reviewer, 'school_id', None):
+            # They can only approve stages linked to their School
+            # AND the stage itself must be a "School Level" stage (not a specific academic dept stage)
+            if not stage.school_id:
+                 raise ValueError("School Office Staff cannot approve generic/global stages.")
+            if reviewer.school_id != stage.school_id:
+                 raise ValueError("You do not belong to the School for this stage.")
+            
+            # (Optional) Ensure they aren't trying to approve a Dean's stage if that's restricted
+            pass 
+
+        # B. Department Staff (e.g., Library, Sports, Accounts)
+        elif getattr(reviewer, 'department_id', None):
+            if not stage.department_id:
+                 raise ValueError("Staff cannot approve generic stages.")
+            if reviewer.department_id != stage.department_id:
+                 raise ValueError("You do not belong to the department for this stage.")
+        
+        else:
+             raise ValueError("Your Staff account has no valid Department or School assignment.")
+
+    # 5. OTHER SPECIFIC ROLES (Legacy)
     else:
         reviewer_role_str = reviewer.role.value if hasattr(reviewer.role, "value") else reviewer.role
         if stage.verifier_role != reviewer_role_str:

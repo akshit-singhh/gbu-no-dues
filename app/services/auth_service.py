@@ -1,9 +1,11 @@
 # app/services/auth_service.py
 
+import string
 from sqlmodel import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
+from fastapi import HTTPException, status
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
@@ -19,6 +21,7 @@ from app.core.security import (
     create_access_token,
 )
 from app.schemas.auth import TokenWithUser, StudentLoginResponse
+from app.schemas.student import StudentRegister
 from app.core.config import settings
 
 
@@ -46,7 +49,89 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
 
 
 # ============================================================================
-# CREATE USER (Eager Loads Relationships)
+# REGISTER STUDENT (FIXED: Circular Dependency Resolution)
+# ============================================================================
+async def register_student(session: AsyncSession, payload: StudentRegister) -> Student:
+    """
+    Creates a User account first, then creates a Student profile linked to it.
+    Resolves FK violation by 3-step process: Create User -> Create Student -> Update User.
+    """
+    # 1. Check if Email Exists (User Table)
+    existing_user = await get_user_by_email(session, payload.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    # 2. Check Enrollment/Roll No (Student Table)
+    stmt = select(Student).where(
+        or_(
+            Student.enrollment_number == payload.enrollment_number,
+            Student.roll_number == payload.roll_number
+        )
+    )
+    result = await session.execute(stmt)
+    if result.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrollment or Roll Number already registered"
+        )
+
+    # 3. Generate IDs explicitly
+    new_user_id = uuid.uuid4()
+    new_student_id = uuid.uuid4()
+
+    # 4. STEP 1: Create User (student_id MUST be None initially)
+    new_user = User(
+        id=new_user_id,
+        name=payload.full_name,
+        email=payload.email,
+        password_hash=get_password_hash(payload.password),
+        role=UserRole.Student,
+        school_id=payload.school_id, 
+        student_id=None, # <--- IMPORTANT: Leave None to avoid FK error
+        is_active=True
+    )
+    session.add(new_user)
+    
+    # 5. STEP 2: Create Student (Link to User is safe because User is added to session)
+    new_student = Student(
+        id=new_student_id,
+        user_id=new_user_id, # Link Backward to User
+        school_id=payload.school_id,
+        enrollment_number=payload.enrollment_number,
+        roll_number=payload.roll_number,
+        full_name=payload.full_name,
+        mobile_number=payload.mobile_number,
+        email=payload.email
+    )
+    session.add(new_student)
+
+    try:
+        # Flush to insert User and Student into DB (but in same transaction)
+        await session.flush()
+
+        # 6. STEP 3: Update User to link to Student
+        new_user.student_id = new_student_id
+        session.add(new_user) # Mark User as dirty/modified
+
+        # 7. Commit Transaction
+        await session.commit()
+        await session.refresh(new_student)
+        return new_student
+
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Registration DB Error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during registration: {str(e)}"
+        )
+
+
+# ============================================================================
+# CREATE USER (General Admin Use)
 # ============================================================================
 async def create_user(
     session: AsyncSession,
@@ -59,9 +144,7 @@ async def create_user(
     school_id: int | None = None,
 ) -> User:
 
-    if role == UserRole.Student and student_id is None:
-        raise ValueError("Student account must include student_id")
-
+    # Admin creation logic might differ, but generally safe to set student_id if student exists
     user_data = {
         "id": uuid.uuid4(),
         "name": name,
@@ -80,7 +163,7 @@ async def create_user(
     try:
         await session.commit()
         
-        # Refresh with Eager Load to prevent MissingGreenlet errors in Pydantic
+        # Refresh with Eager Load
         stmt = (
             select(User)
             .options(
@@ -91,9 +174,7 @@ async def create_user(
             .where(User.id == user.id)
         )
         result = await session.execute(stmt)
-        refreshed_user = result.scalar_one()
-        
-        return refreshed_user
+        return result.scalar_one()
 
     except IntegrityError:
         await session.rollback()
@@ -101,7 +182,7 @@ async def create_user(
 
 
 # ============================================================================
-# AUTHENTICATE USER (Admin / Staff / Dean)
+# AUTHENTICATE USER (Admin / Staff)
 # ============================================================================
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> User | None:
     user = await get_user_by_email(session, email)
@@ -118,7 +199,87 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
 
 
 # ============================================================================
-# CREATE LOGIN RESPONSE
+# AUTHENTICATE STUDENT LOGIN
+# ============================================================================
+async def authenticate_student(
+    session: AsyncSession,
+    identifier: str,
+    password: str
+) -> StudentLoginResponse | None:
+
+    identifier = identifier.strip()
+
+    # 1. Fetch Student 
+    query = (
+        select(Student)
+        .options(selectinload(Student.school)) 
+        .where(
+            or_(
+                Student.enrollment_number.ilike(identifier),
+                Student.roll_number.ilike(identifier),
+                Student.email.ilike(identifier)
+            )
+        )
+    )
+    result = await session.execute(query)
+    students = result.scalars().all()
+    
+    if not students:
+        return None
+        
+    # Self-Healing Logic for Duplicates
+    if len(students) > 1:
+        logger.warning(f"Duplicate student records found for: {identifier}. Using most recent.")
+        student = sorted(students, key=lambda s: s.created_at, reverse=True)[0]
+    else:
+        student = students[0]
+
+    # 2. Fetch Linked User
+    result = await session.execute(
+        select(User)
+        .where(User.student_id == student.id)
+        .options(selectinload(User.student))
+    )
+    user = result.scalars().first()
+    
+    if not user:
+        # Fallback: Try finding user by email if link is broken
+        user = await get_user_by_email(session, student.email)
+        if not user:
+            return None
+
+    # Verify Role
+    user_role_val = user.role.value if hasattr(user.role, "value") else user.role
+    if str(user_role_val) != UserRole.Student.value:
+        return None
+
+    # Verify Password
+    if not verify_password(password, user.password_hash):
+        return None
+
+    token = create_access_token(
+        subject=str(user.id),
+        data={
+            "role": "student",
+            "student_id": str(student.id),
+            "school_id": student.school_id
+        }
+    )
+
+    student_dict = student.model_dump()
+    student_dict["school_name"] = student.school.name if student.school else "Unknown School"
+
+    return StudentLoginResponse(
+        access_token=token,
+        token_type="bearer",
+        user_id=user.id,
+        student_id=student.id,
+        student=student_dict,
+    )
+
+
+# ============================================================================
+# CREATE LOGIN RESPONSE (Restored)
 # ============================================================================
 async def create_login_response(user: User, session: AsyncSession) -> TokenWithUser:
     role_str = str(user.role.value if hasattr(user.role, "value") else user.role).lower()
@@ -182,106 +343,24 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
 
 
 # ============================================================================
-# AUTHENTICATE STUDENT LOGIN (Robust Duplicate Handling & School Name Fix)
-# ============================================================================
-async def authenticate_student(
-    session: AsyncSession,
-    identifier: str,
-    password: str
-) -> StudentLoginResponse | None:
-
-    identifier = identifier.strip()
-
-    # 1. Fetch Student (Handle duplicates gracefully)
-    # ✅ FIX: Eager load School here so it's available in the response immediately
-    query = (
-        select(Student)
-        .options(selectinload(Student.school)) 
-        .where(
-            or_(
-                Student.enrollment_number.ilike(identifier),
-                Student.roll_number.ilike(identifier),
-                Student.email.ilike(identifier)
-            )
-        )
-    )
-    result = await session.execute(query)
-    
-    # Use scalars().all() to get list
-    students = result.scalars().all()
-    
-    if not students:
-        return None
-        
-    # ✅ FIX: Self-Healing Logic for Duplicates
-    if len(students) > 1:
-        logger.warning(f"⚠️ Duplicate student records found for: {identifier}. Using the most recent.")
-        # Sort by creation time descending (newest first)
-        student = sorted(students, key=lambda s: s.created_at, reverse=True)[0]
-    else:
-        student = students[0]
-
-    # 2. Fetch Linked User
-    result = await session.execute(
-        select(User)
-        .where(User.student_id == student.id)
-        .options(selectinload(User.student))
-    )
-    users = result.scalars().all()
-    
-    if not users:
-        return None
-    
-    # Safe pick user
-    user = users[0]
-
-    # Verify Role
-    user_role_val = user.role.value if hasattr(user.role, "value") else user.role
-    if str(user_role_val) != UserRole.Student.value:
-        return None
-
-    # Verify Password
-    if not verify_password(password, user.password_hash):
-        return None
-
-    token = create_access_token(
-        subject=str(user.id),
-        data={
-            "role": "student",
-            "student_id": str(student.id),
-            "school_id": student.school_id
-        }
-    )
-
-    # ✅ FIX: Manually inject school_name into the response dict
-    # This bypasses Pydantic stripping the relationship field
-    student_dict = student.model_dump()
-    student_dict["school_name"] = student.school.name if student.school else "Unknown School"
-
-    return StudentLoginResponse(
-        access_token=token,
-        token_type="bearer",
-        user_id=user.id,
-        student_id=student.id,
-        student=student_dict, # Pass the enriched dictionary
-    )
-
-
-# ============================================================================
-# FORGOT PASSWORD LOGIC (Timezone Safe)
+# PASSWORD RESET UTILS
 # ============================================================================
 async def request_password_reset(session: AsyncSession, email: str):
-    user = await get_user_by_email(session, email)
-    if not user:
-        raise ValueError("User not found")
+    """
+    Generates a 6-digit OTP and sets expiry to 5 minutes from now.
+    """
+    result = await session.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
 
-    otp = f"{random.randint(100000, 999999)}"
+    if not user:
+        raise ValueError("User with this email not found")
+
+    # Generate 6-digit OTP
+    otp = ''.join(random.choices(string.digits, k=6))
     
-    # Store as naive UTC to avoid asyncpg offset errors
-    expiry_time = datetime.now(timezone.utc) + timedelta(minutes=15)
-    
+    # Set OTP and Expiry (Now + 5 minutes)
     user.otp_code = otp
-    user.otp_expires_at = expiry_time.replace(tzinfo=None) 
+    user.otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
     
     session.add(user)
     await session.commit()
@@ -289,48 +368,45 @@ async def request_password_reset(session: AsyncSession, email: str):
     
     return otp, user
 
-
 async def verify_reset_otp(session: AsyncSession, email: str, otp: str) -> bool:
-    user = await get_user_by_email(session, email)
-    if not user: 
-        return False
-        
-    user_otp = getattr(user, "otp_code", None)
-    user_otp_exp = getattr(user, "otp_expires_at", None)
+    """
+    Verifies the OTP and checks if it is expired.
+    """
+    result = await session.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
 
-    if not user_otp or user_otp != otp:
+    if not user or not user.otp_code or not user.otp_expires_at:
         return False
-    
-    now = datetime.now(timezone.utc)
-    
-    # Fix Timezone Comparison Error
-    if user_otp_exp and user_otp_exp.tzinfo is None:
-        user_otp_exp = user_otp_exp.replace(tzinfo=timezone.utc)
 
-    if user_otp_exp and user_otp_exp < now:
+    # Check 1: Does OTP Match?
+    if user.otp_code != otp:
         return False
-        
+
+    # Check 2: Is it Expired?
+    if datetime.utcnow() > user.otp_expires_at:
+        return False
+
     return True
 
-
 async def finalize_password_reset(session: AsyncSession, email: str, otp: str, new_password: str):
-    user = await get_user_by_email(session, email)
-    if not user:
-        raise ValueError("User not found")
-    
-    # Re-verify inside finalize for security
+    """
+    Resets the password if OTP is valid.
+    """
+    # Verify again just to be safe
     is_valid = await verify_reset_otp(session, email, otp)
     if not is_valid:
         raise ValueError("Invalid or expired OTP")
 
+    result = await session.execute(select(User).where(User.email == email))
+    user = result.scalar_one()
+
+    # Update Password and Clear OTP
     user.password_hash = get_password_hash(new_password)
-    
     user.otp_code = None
     user.otp_expires_at = None
-
+    
     session.add(user)
     await session.commit()
-    return True
 
 
 # ============================================================================

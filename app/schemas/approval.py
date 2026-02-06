@@ -28,7 +28,10 @@ class StageActionResponse(BaseModel):
     id: UUID
     application_id: UUID
     
-    # (It will be None for Library, Hostel, Sports, etc.)
+    # School ID (For Dean Stages)
+    school_id: Optional[int] = None
+
+    # (Used for HOD, Library, Hostel, etc.)
     department_id: Optional[int] = None
     
     verifier_role: str

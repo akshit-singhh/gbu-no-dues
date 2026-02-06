@@ -13,7 +13,6 @@ from app.services.auth_service import get_user_by_id
 from app.models.user import User, UserRole
 from app.models.application import Application 
 
-# ✅ Import the robust session directly from database.py
 from app.core.database import get_db_session 
 
 # ------------------------------------------------------------

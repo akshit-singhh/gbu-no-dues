@@ -4,14 +4,15 @@ from typing import Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, Integer
+from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
-from app.models.application import ApplicationStatus
-
+# Prevent circular imports
 if TYPE_CHECKING:
     from app.models.application import Application
     from app.models.user import User
+    from app.models.school import School
+    from app.models.department import Department
 
 class ApplicationStage(SQLModel, table=True):
     __tablename__ = "application_stages"
@@ -21,23 +22,38 @@ class ApplicationStage(SQLModel, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
 
-    application_id: UUID = Field(foreign_key="applications.id", nullable=False)
+    application_id: UUID = Field(
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("applications.id"), nullable=False)
+    )
     
     # --------------------------------------------------------
-    # (Critical for Dean/School Office)
+    # ROUTING LOGIC
     # --------------------------------------------------------
-    school_id: Optional[int] = Field(default=None, foreign_key="schools.id")
+    # Critical for Dean/School Office stages
+    school_id: Optional[int] = Field(
+        default=None, 
+        sa_column=Column(Integer, ForeignKey("schools.id"), nullable=True)
+    )
 
-    # This handles Lab/Department specific stages
-    department_id: Optional[int] = Field(default=None, foreign_key="departments.id")
+    # Handles Lab/Department/HOD specific stages
+    department_id: Optional[int] = Field(
+        default=None, 
+        sa_column=Column(Integer, ForeignKey("departments.id"), nullable=True)
+    )
 
-    verifier_role: str = Field(nullable=False)
-    status: str = Field(default=ApplicationStatus.PENDING.value)
+    # --------------------------------------------------------
+    # STAGE DETAILS
+    # --------------------------------------------------------
+    verifier_role: str = Field(sa_column=Column(String, nullable=False))
+    status: str = Field(default="pending", sa_column=Column(String, default="pending"))
     
-    comments: Optional[str] = Field(default=None)
+    comments: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
-    #Add foreign_key to link to Users table
-    verified_by: Optional[UUID] = Field(default=None, foreign_key="users.id")
+    # Link to the User who verified this stage
+    verified_by: Optional[UUID] = Field(
+        default=None, 
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    )
     
     verified_at: Optional[datetime] = Field(default=None)
 
@@ -46,9 +62,13 @@ class ApplicationStage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # Relationships
+    # --------------------------------------------------------
+    # RELATIONSHIPS (Must match back_populates in other models)
+    # --------------------------------------------------------
     application: "Application" = Relationship(back_populates="stages")
     
-    #Add the relationship back to User
-    # This matches Relationship(back_populates="verifier") in your User model
     verifier: Optional["User"] = Relationship(back_populates="verified_stages")
+
+    school: Optional["School"] = Relationship(back_populates="stages")
+
+    department: Optional["Department"] = Relationship(back_populates="stages")

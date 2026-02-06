@@ -13,16 +13,21 @@ import uuid
 import os
 import socket
 
-# Rate Limiting Imports
+# Database & Models for Seeding
+from sqlmodel import select
+from app.core.database import test_connection, init_db, AsyncSessionLocal
+from app.models.school import School
+from app.models.department import Department
+from app.models.user import UserRole
+
+# Rate Limiting
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.rate_limiter import limiter
 
-# Core modules
-from app.core.database import test_connection, init_db, AsyncSessionLocal
+# Config & Services
 from app.core.config import settings
 from app.services.auth_service import get_user_by_email, create_user
-from app.models.user import UserRole
 
 # Routers
 from app.api.endpoints import (
@@ -60,13 +65,79 @@ logger.add(
 START_TIME = time.time()
 
 # ------------------------------------------------------------
+# SEEDING HELPER FUNCTION
+# ------------------------------------------------------------
+async def seed_static_data():
+    """Automatically populates Schools and Departments if they are missing."""
+    async with AsyncSessionLocal() as session:
+        # 1. SEED SCHOOLS
+        schools_data = [
+            {"name": "School of Information & Communication Technology", "code": "SOICT"},
+            {"name": "School of Engineering", "code": "SOE"},
+            {"name": "School of Management", "code": "SOM"},
+            {"name": "School of Biotechnology", "code": "SOBT"},
+            {"name": "School of Vocational Studies & Applied Sciences", "code": "SOVSAS"},
+            {"name": "School of Law, Justice & Governance", "code": "SOLJ"},
+            {"name": "School of Humanities & Social Sciences", "code": "SOHSS"},
+            {"name": "School of Architecture & Planning", "code": "SOAP"},
+        ]
+
+        for s in schools_data:
+            stmt = select(School).where(School.code == s["code"])
+            result = await session.execute(stmt)
+            if not result.scalar_one_or_none():
+                logger.info(f"🌱 Seeding School: {s['name']}")
+                session.add(School(name=s["name"], code=s["code"]))
+
+        # 2. SEED DEPARTMENTS
+        depts_data = [
+            # Phase 1: Academic (HOD Approval)
+            {"name": "Computer Science & Engineering", "code": "CSE", "phase_number": 1},
+            {"name": "Information Technology", "code": "IT", "phase_number": 1},
+            {"name": "Electronics & Communication", "code": "ECE", "phase_number": 1},
+            {"name": "Mechanical Engineering", "code": "ME", "phase_number": 1},
+            {"name": "Civil Engineering", "code": "CE", "phase_number": 1},
+            {"name": "Electrical Engineering", "code": "EE", "phase_number": 1},
+            {"name": "Biotechnology", "code": "BT", "phase_number": 1},
+            {"name": "Management Studies", "code": "MGMT", "phase_number": 1},
+            {"name": "Law & Justice", "code": "LAW", "phase_number": 1},
+            {"name": "Humanities & Social Sciences", "code": "HSS", "phase_number": 1},
+            {"name": "Architecture & Planning", "code": "AP", "phase_number": 1},
+            {"name": "Applied Mathematics", "code": "MATH", "phase_number": 1},
+            {"name": "Applied Physics", "code": "PHY", "phase_number": 1},
+
+            # Phase 2: Administrative (Parallel Approval)
+            {"name": "University Library", "code": "LIB", "phase_number": 2},
+            {"name": "Hostel Administration", "code": "HST", "phase_number": 2},
+            {"name": "Sports Department", "code": "SPT", "phase_number": 2},
+            {"name": "Laboratories", "code": "LAB", "phase_number": 2},
+            {"name": "Corporate Relations Cell", "code": "CRC", "phase_number": 2},
+
+            # Phase 3: Accounts (Final Clearance)
+            {"name": "Finance & Accounts", "code": "ACC", "phase_number": 3},
+        ]
+
+        for d in depts_data:
+            stmt = select(Department).where(Department.code == d["code"])
+            result = await session.execute(stmt)
+            if not result.scalar_one_or_none():
+                logger.info(f"🌱 Seeding Department: {d['name']}")
+                session.add(Department(name=d["name"], code=d["code"], phase_number=d["phase_number"]))
+
+        try:
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Error during static data seeding: {e}")
+            await session.rollback()
+
+# ------------------------------------------------------------
 # LIFESPAN (Startup / Shutdown)
 # ------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting GBU No Dues Backend...")
 
-    # 1. Database check
+    # 1. Database Check & Table Creation
     try:
         await test_connection()
         logger.success("Database connection established.")
@@ -76,7 +147,14 @@ async def lifespan(app: FastAPI):
         logger.exception("❌ Startup failed: Database unavailable.")
         raise
 
-    # 2. Seed System Admin
+    # 2. Auto-Seed Schools & Departments (The Fix)
+    try:
+        await seed_static_data()
+        logger.success("Static data (Schools/Depts) verified.")
+    except Exception:
+        logger.exception("⚠️ Static data seeding failed.")
+
+    # 3. Seed System Admin
     try:
         async with AsyncSessionLocal() as session:
             if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:

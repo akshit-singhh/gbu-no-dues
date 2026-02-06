@@ -4,19 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, text
-from sqlalchemy import or_, func
+from sqlalchemy import or_
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
 
-from app.api.deps import get_db_session, get_application_or_404
+from app.api.deps import get_db_session, get_application_or_404, get_current_user
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
 from app.models.application import Application, ApplicationStatus
 from app.models.application_stage import ApplicationStage
 from app.models.student import Student
 from app.models.department import Department
-from app.models.school import School
 from app.models.audit import AuditLog 
 from app.schemas.approval import StageActionRequest, StageActionResponse, AdminOverrideRequest
 
@@ -33,10 +32,10 @@ router = APIRouter(
     tags=["Approvals"]
 )
 
-# Define all roles that act as verifiers
+# Roles permitted to access approval endpoints
 VERIFIER_ROLES = [
-    UserRole.Dean, UserRole.Staff, UserRole.Library, 
-    UserRole.Hostel, UserRole.Sports, UserRole.Lab, 
+    UserRole.Dean, UserRole.HOD, UserRole.Staff, 
+    UserRole.Library, UserRole.Hostel, UserRole.Sports, UserRole.Lab, 
     UserRole.CRC, UserRole.Account
 ]
 
@@ -44,10 +43,6 @@ VERIFIER_ROLES = [
 #  HELPER: Fetch Email Data
 # ===================================================================
 async def get_email_context(session: AsyncSession, application_id: str, stage: ApplicationStage):
-    """
-    Fetches the student details and the name of the School or Department 
-    associated with the stage. Used for sending email notifications.
-    """
     query = (
         select(Student)
         .join(Application, Application.student_id == Student.id)
@@ -67,7 +62,7 @@ async def get_email_context(session: AsyncSession, application_id: str, stage: A
 
 
 # ===================================================================
-# LIST ALL APPLICATIONS (Dashboard List)
+# LIST ALL APPLICATIONS
 # ===================================================================
 @router.get("/all")
 async def list_all_applications(
@@ -101,42 +96,62 @@ async def list_all_applications(
         )
 
     # -------------------------------------------------------
-    # LOGIC FOR DEPARTMENTS / VERIFIERS
+    # LOGIC FOR DEPARTMENTS / VERIFIERS (Strict Filtering)
     # -------------------------------------------------------
     if current_user.role not in [UserRole.Admin, UserRole.Student]:
         query = query.join(ApplicationStage, ApplicationStage.application_id == Application.id)
 
-        # A. DEAN
+        # A. DEAN (Only Dean Stages for their School)
         if current_user.role == UserRole.Dean:
             dean_school_id = getattr(current_user, 'school_id', None)
             if not dean_school_id:
                 return JSONResponse(status_code=200, content={"message": "Dean has no school assigned.", "data": []})
             
             query = query.where(
-                ApplicationStage.verifier_role == "dean",
-                or_(
-                    ApplicationStage.school_id == dean_school_id,
-                    Student.school_id == dean_school_id
-                )
+                ApplicationStage.school_id == dean_school_id,
+                ApplicationStage.verifier_role == "dean" 
             )
 
-        # B. STAFF
-        elif current_user.role == UserRole.Staff:
-            staff_dept_id = getattr(current_user, 'department_id', None)
-            if not staff_dept_id:
-                return JSONResponse(status_code=200, content={"message": "Staff has no department assigned.", "data": []})
+        # B. HOD (Only HOD Stages for their Dept)
+        elif current_user.role == UserRole.HOD:
+            hod_dept_id = getattr(current_user, 'department_id', None)
+            if not hod_dept_id:
+                return JSONResponse(status_code=200, content={"message": "HOD has no department assigned.", "data": []})
             
-            query = query.where(ApplicationStage.department_id == staff_dept_id)
+            query = query.where(
+                ApplicationStage.department_id == hod_dept_id,
+                ApplicationStage.verifier_role == "hod"
+            )
 
-        # C. OTHER ROLES
+        # C. STAFF (Distinguish School Office vs Dept Staff)
+        elif current_user.role == UserRole.Staff:
+            staff_school_id = getattr(current_user, 'school_id', None)
+            staff_dept_id = getattr(current_user, 'department_id', None)
+
+            # 1. SCHOOL OFFICE STAFF
+            if staff_school_id:
+                query = query.where(
+                    ApplicationStage.school_id == staff_school_id,
+                    ApplicationStage.verifier_role == "staff" 
+                )
+            
+            # 2. DEPARTMENT STAFF (e.g. Library)
+            elif staff_dept_id:
+                query = query.where(ApplicationStage.department_id == staff_dept_id)
+            
+            else:
+                return JSONResponse(status_code=200, content={"message": "Staff has no department or school assigned.", "data": []})
+
+        # D. OTHER SPECIFIC ROLES (Legacy support)
         else:
             role_name = current_user.role.value if hasattr(current_user.role, "value") else current_user.role
             query = query.where(ApplicationStage.verifier_role == role_name)
 
-        # Status Filter
+        # Status Filter (Applied to the *User's specific stage*)
         if status:
             query = query.where(ApplicationStage.status == status)
         
+        # Only show if the workflow has reached this stage (Forward visibility constraint)
         query = query.where(Application.current_stage_order >= ApplicationStage.sequence_order)
         query = query.distinct()
 
@@ -160,12 +175,10 @@ async def list_all_applications(
         return JSONResponse(status_code=200, content={"message": "No applications found.", "data": []})
 
     final_list = []
-    
-    # FIX: Get current time for calculating pending days
     now = datetime.utcnow()
 
     for app, student in rows:
-        # Location Logic
+        # Location Logic (Summary String)
         current_location_str = "Processing..."
         if app.status == "completed":
             current_location_str = "Completed (Certificate Issued)"
@@ -184,7 +197,9 @@ async def list_all_applications(
             rejected_names = []
 
             for stage_obj, dept_name in active_stages:
-                name = dept_name if dept_name else stage_obj.verifier_role.capitalize()
+                name = dept_name if dept_name else stage_obj.verifier_role.replace("_", " ").title()
+                if stage_obj.verifier_role == "dean": name = "School Dean"
+                
                 if stage_obj.status == "approved": approved_names.append(name)
                 elif stage_obj.status == "rejected": rejected_names.append(name)
                 else: pending_names.append(name)
@@ -200,28 +215,31 @@ async def list_all_applications(
         # ---------------------------------------------------------------------
         stage_query = select(ApplicationStage, User.name).outerjoin(User, ApplicationStage.verified_by == User.id).where(ApplicationStage.application_id == app.id)
         
-        # 1. ADMIN: Default to current stage (first one found)
+        # Role Filters... (Same logic as above)
         if current_user.role == UserRole.Admin:
             if app.status not in [ApplicationStatus.COMPLETED, ApplicationStatus.REJECTED]:
                 stage_query = stage_query.where(ApplicationStage.sequence_order == app.current_stage_order)
             else:
                 stage_query = stage_query.order_by(ApplicationStage.sequence_order.desc())
-
-        # 2. STAFF
         elif current_user.role == UserRole.Staff:
-            if current_user.department_id:
+            if current_user.school_id:
+                 stage_query = stage_query.where(
+                     ApplicationStage.school_id == current_user.school_id,
+                     ApplicationStage.verifier_role == "staff" 
+                 )
+            elif current_user.department_id:
                 stage_query = stage_query.where(ApplicationStage.department_id == current_user.department_id)
-        
-        # 3. DEAN
         elif current_user.role == UserRole.Dean:
              stage_query = stage_query.where(ApplicationStage.verifier_role == "dean")
-        
-        # 4. OTHER VERIFIERS
+        elif current_user.role == UserRole.HOD:
+             if current_user.department_id:
+                stage_query = stage_query.where(
+                    ApplicationStage.verifier_role == "hod",
+                    ApplicationStage.department_id == current_user.department_id
+                )
         elif current_user.role != UserRole.Student:
              role_name = current_user.role.value if hasattr(current_user.role, "value") else current_user.role
              stage_query = stage_query.where(ApplicationStage.verifier_role == role_name)
-        
-        # 5. STUDENT
         else:
              stage_query = stage_query.where(ApplicationStage.sequence_order == app.current_stage_order)
 
@@ -232,15 +250,12 @@ async def list_all_applications(
         row = stage_res.first() 
 
         active_stage_data = None
-        
-        # FIX: Variables to track overdue status
         days_pending = 0
         is_overdue = False
 
         if row:
             stage_obj, verifier_name = row
             
-            # FIX: Calculate Days Pending for this specific stage
             if stage_obj.status == "pending":
                 delta = now - stage_obj.created_at
                 days_pending = delta.days
@@ -273,7 +288,6 @@ async def list_all_applications(
             "created_at": app.created_at,
             "updated_at": app.updated_at,
             "active_stage": active_stage_data,
-            # ✅ FIX: Inject flags for Frontend Popup/Red Color
             "days_pending": days_pending,
             "is_overdue": is_overdue
         })
@@ -282,26 +296,17 @@ async def list_all_applications(
 
 
 # ===================================================================
-# GET ALL STAGES DETAILED (Supports Display ID)
+# GET ALL STAGES DETAILED
 # ===================================================================
 @router.get("/{application_id}/stages")
 async def get_application_stages_detailed(
-    # 1. Use the Smart Dependency (Handles UUID or Display ID automatically)
     app: Application = Depends(get_application_or_404),
     session: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.Student, *VERIFIER_ROLES)),
 ):
-    """
-    Fetches ALL stages for a specific application.
-    Supports fetching by UUID or Readable ID (e.g., 'ND235ICS015DA').
-    """
-    
-    # Security: If Student, allow only own application
     if current_user.role == UserRole.Student and app.student_id != current_user.student_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # 2. Fetch All Stages with Details
-    # We use app.id (which the dependency resolved for us)
     query = (
         select(
             ApplicationStage, 
@@ -320,7 +325,8 @@ async def get_application_stages_detailed(
     stages_data = []
     
     for stage, dept_name, verifier_name in rows:
-        display_name = dept_name if dept_name else stage.verifier_role.capitalize()
+        display_name = dept_name if dept_name else stage.verifier_role.replace("_", " ").title()
+        if stage.verifier_role == "dean": display_name = "School Dean"
         
         stages_data.append({
             "stage_id": stage.id,
@@ -395,7 +401,6 @@ async def get_my_approval_history(
     rows = result.all()
 
     history_data = []
-    
     for row in rows:
         display_action = "Approved"
         if "REJECT" in row.action:
@@ -418,28 +423,33 @@ async def get_my_approval_history(
     return history_data
 
 # ===================================================================
-# ENRICHED DETAILS (For Approvers/Deans)
+# ENRICHED DETAILS (FIXED: Fetches Department Name)
 # ===================================================================
 @router.get("/enriched/{application_id}")
 async def get_enriched_application_details(
-    app: Application = Depends(get_application_or_404),
-    current_user: User = Depends(
-        AllowRoles(UserRole.Admin, *VERIFIER_ROLES)
-    ),
+    application_id: UUID,
     session: AsyncSession = Depends(get_db_session),
-):
-    # 1. Corrected SQL
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    
+    # 1. Fetch Application first
+    app = await session.get(Application, application_id)
+    if not app:
+        raise HTTPException(404, "Application not found")
+
+    # 2. Corrected SQL (Adds JOIN to departments)
     query_text = """
-        SELECT
+        SELECT 
             a.id AS application_id,
             a.display_id,
             a.status AS application_status,
             a.current_stage_order,
             a.created_at,
             a.updated_at,
-            a.remarks AS application_remarks, 
+            a.remarks AS application_remarks,
+            a.student_remarks,
             a.proof_document_url,
-
+            
             s.full_name AS student_name,
             s.roll_number,
             s.enrollment_number,
@@ -455,14 +465,18 @@ async def get_enriched_application_details(
             s.is_hosteller,
             s.hostel_name,
             s.hostel_room,
-            s.batch,
-            s.section,
+            s.section, 
             s.admission_year,
+            s.admission_type,
             
-            sch.name AS school_name
+            sch.name AS school_name,
+            d.name AS department_name,
+            d.code AS department_code
+            
         FROM applications a
         JOIN students s ON s.id = a.student_id
         LEFT JOIN schools sch ON sch.id = s.school_id
+        LEFT JOIN departments d ON d.id = s.department_id
         WHERE a.id = :app_id
     """
     
@@ -470,53 +484,65 @@ async def get_enriched_application_details(
 
     # Dean Security Check
     if current_user.role == UserRole.Dean:
-        dean_school_id = getattr(current_user, 'school_id', None)
-        if not dean_school_id:
+        if not current_user.school_id:
              raise HTTPException(403, "Dean has no school assigned.")
         query_text += " AND s.school_id = :school_id"
-        params["school_id"] = dean_school_id
+        params["school_id"] = current_user.school_id
+    
+    # HOD Security Check
+    if current_user.role == UserRole.HOD:
+        if not current_user.department_id:
+             raise HTTPException(403, "HOD has no department assigned.")
+        query_text += " AND s.department_id = :department_id"
+        params["department_id"] = current_user.department_id
 
     try:
         result = await session.execute(text(query_text), params)
         data = result.mappings().one_or_none()
     except Exception as e:
         print(f"SQL Error: {e}")
-        raise HTTPException(500, "Database error")
+        raise HTTPException(500, f"Database error: {str(e)}")
 
     if not data:
         raise HTTPException(404, "Application not found or access denied")
 
     response_dict = dict(data)
 
-    # ---------------------------------------------------------
-    # 2. Fetch the Active Stage (Contains Student's Remark)
-    # ---------------------------------------------------------
+    # 3. Fetch the Active Stage
     stage_query = select(ApplicationStage).where(ApplicationStage.application_id == app.id)
     
     if current_user.role == UserRole.Dean:
         stage_query = stage_query.where(ApplicationStage.verifier_role == "dean")
+    elif current_user.role == UserRole.HOD:
+        stage_query = stage_query.where(
+            ApplicationStage.verifier_role == "hod",
+            ApplicationStage.department_id == current_user.department_id
+        )
     elif current_user.role == UserRole.Staff:
-        if current_user.department_id:
-            stage_query = stage_query.where(ApplicationStage.department_id == current_user.department_id)
-    elif current_user.role != UserRole.Admin:
-        role_name = current_user.role.value if hasattr(current_user.role, "value") else current_user.role
-        stage_query = stage_query.where(ApplicationStage.verifier_role == role_name)
-
+        if current_user.school_id:
+            stage_query = stage_query.where(
+                ApplicationStage.school_id == current_user.school_id,
+                ApplicationStage.verifier_role == "staff" 
+            )
+        elif current_user.department_id:
+            stage_query = stage_query.where(
+                ApplicationStage.department_id == current_user.department_id
+            )
+    
     stage_res = await session.execute(stage_query)
     my_stage = stage_res.scalars().first()
 
     if my_stage:
-        response_dict["actionable_stage"] = {
+        response_dict["active_stage"] = {
             "stage_id": my_stage.id,
+            "id": my_stage.id,
             "status": my_stage.status,
             "sequence_order": my_stage.sequence_order,
             "remarks": my_stage.comments, 
-            
-            # This 'comments' field contains "Resubmission: [Student Note]"
             "comments": my_stage.comments 
         }
     else:
-        response_dict["actionable_stage"] = None
+        response_dict["active_stage"] = None
 
     if response_dict.get("proof_document_url"):
         response_dict["proof_document_url"] = get_signed_url(response_dict["proof_document_url"])
@@ -532,7 +558,7 @@ async def get_application_details(
     session: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.Student, *VERIFIER_ROLES)),
 ):
-    # ✅ FIX: Ensure students can only see their own application
+    # Ensure students can only see their own application
     if current_user.role == UserRole.Student and app.student_id != current_user.student_id:
         raise HTTPException(status_code=403, detail="Access denied to this application")
 
@@ -690,7 +716,7 @@ async def reject_stage_endpoint(
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        # ✅ CHECK: Use UserRole.Admin only
+        # CHECK: Use UserRole.Admin only
         is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:

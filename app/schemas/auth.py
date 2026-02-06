@@ -1,18 +1,17 @@
 # app/schemas/auth.py
 
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, Any
+from typing import Optional, Dict, Any
 from uuid import UUID
 
 from app.models.user import UserRole
-# Keeping these imports if needed by other parts of the app, 
-# though we define custom schemas below for specific auth needs.
+# Keeping these imports for response models
 from app.schemas.user import UserRead
 from app.schemas.student import StudentRead
 
 
 # -------------------------------------------------------------------
-# LOGIN REQUEST (Admin/Staff/Dean)
+# LOGIN REQUEST
 # -------------------------------------------------------------------
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -32,36 +31,33 @@ class LoginRequest(BaseModel):
 
 
 # -------------------------------------------------------------------
-# REGISTER REQUEST (For Staff/Deans)
+# REGISTER REQUEST (Staff/Admin)
 # -------------------------------------------------------------------
 class RegisterRequest(BaseModel):
     name: str
     email: EmailStr
     password: str
     role: UserRole
-    department_id: Optional[int] = None   
+    
+    department_code: Optional[str] = None   
+    school_code: Optional[str] = None
+    
+    # Backward compatibility
+    department_id: Optional[int] = None 
     school_id: Optional[int] = None
-    # Captcha is usually optional for internal admin registration
-    captcha_input: Optional[str] = Field(None, description="CAPTCHA code (optional for admin creation)")
+
+    captcha_input: Optional[str] = Field(None, description="CAPTCHA code")
 
     class Config:
         json_schema_extra = {
-            "examples": [
-                {
-                    "name": "Staff User",
-                    "email": "staff@example.com",
-                    "password": "password123",
-                    "role": "staff",
-                    "department_id": 3
-                },
-                {
-                    "name": "Dean User",
-                    "email": "dean@example.com",
-                    "password": "password123",
-                    "role": "dean",
-                    "school_id": 1
-                }
-            ]
+            "example": {
+                "name": "Staff User",
+                "email": "staff@example.com",
+                "password": "password123",
+                "role": "staff",
+                "department_code": "LIB",
+                "school_code": None
+            }
         }
 
 
@@ -87,6 +83,7 @@ class TokenWithUser(Token):
     department_name: Optional[str] = None
     school_id: Optional[int] = None
     school_name: Optional[str] = None
+    student_id: Optional[str] = None
 
 
 # -------------------------------------------------------------------
@@ -100,7 +97,6 @@ class StudentLoginRequest(BaseModel):
     captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
 
 
-# Custom Schema to ensure school_name is sent to frontend
 class StudentWithSchool(BaseModel):
     id: UUID
     full_name: str
@@ -110,13 +106,12 @@ class StudentWithSchool(BaseModel):
     mobile_number: Optional[str] = None
     school_id: Optional[int] = None
     school_name: Optional[str] = None
-    
-    # Profile Fields
+    department_id: Optional[int] = None
+
     father_name: Optional[str] = None
     mother_name: Optional[str] = None
     admission_year: Optional[int] = None
     gender: Optional[str] = None
-    batch: Optional[str] = None
     section: Optional[str] = None
     admission_type: Optional[str] = None
     is_hosteller: bool = False
@@ -125,7 +120,7 @@ class StudentWithSchool(BaseModel):
     
     class Config:
         from_attributes = True
-        extra = "allow" # Allow extra fields if DB model changes
+        extra = "allow"
 
 
 class StudentLoginResponse(BaseModel):
@@ -133,13 +128,12 @@ class StudentLoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: UUID
     student_id: UUID
-    student: StudentWithSchool # <--- Uses the fixed schema
+    student: StudentWithSchool 
 
     class Config:
         from_attributes = True
 
 
-# ✅ NEW: Student Registration Request (Was missing before)
 class StudentRegisterRequest(BaseModel):
     full_name: str
     email: EmailStr
@@ -154,12 +148,14 @@ class StudentRegisterRequest(BaseModel):
     mother_name: Optional[str] = None
     admission_year: Optional[int] = None
     gender: Optional[str] = None
-    batch: Optional[str] = None
     section: Optional[str] = None
     admission_type: Optional[str] = None
     is_hosteller: bool = False
     hostel_name: Optional[str] = None
     hostel_room: Optional[str] = None
+
+    captcha_input: str
+    captcha_hash: str
 
 
 # -------------------------------------------------------------------
@@ -180,7 +176,7 @@ class ResetPasswordRequest(BaseModel):
 
 
 # -------------------------------------------------------------------
-# ADMIN CREATION SCHEMAS (Schools & Departments)
+# ADMIN CREATION SCHEMAS
 # -------------------------------------------------------------------
 class SchoolCreateRequest(BaseModel):
     name: str
@@ -189,3 +185,4 @@ class SchoolCreateRequest(BaseModel):
 class DepartmentCreateRequest(BaseModel):
     name: str
     phase_number: int
+    code: str

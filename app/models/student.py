@@ -8,11 +8,12 @@ from datetime import date, datetime
 from typing import Optional, List
 import uuid
 
-# Forward references for type hinting
+# Forward references
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.user import User
     from app.models.school import School
+    from app.models.department import Department
     from app.models.application import Application
 
 class Student(SQLModel, table=True):
@@ -21,6 +22,13 @@ class Student(SQLModel, table=True):
     id: uuid.UUID = Field(
         default_factory=uuid4,
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
+    )
+
+    # ----------------------
+    # Foreign Keys (Auth)
+    # ----------------------
+    user_id: uuid.UUID = Field(
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     )
 
     # ----------------------
@@ -33,10 +41,16 @@ class Student(SQLModel, table=True):
     email: str = Field(sa_column=Column(String, nullable=False, unique=True))
 
     # ----------------------
-    # Foreign Keys
+    # Foreign Keys (Academic)
     # ----------------------
     school_id: int = Field(
         sa_column=Column(Integer, ForeignKey("schools.id"), nullable=False)
+    )
+
+    # Link to Academic Department (Required for HOD Step)
+    department_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("departments.id"), nullable=True)
     )
 
     # ----------------------
@@ -62,7 +76,7 @@ class Student(SQLModel, table=True):
     # Academic Details
     # ----------------------
     section: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    batch: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    # Batch Removed
     admission_year: Optional[int] = Field(default=None)
     admission_type: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
@@ -71,8 +85,18 @@ class Student(SQLModel, table=True):
     # ----------------------
     # Relationships
     # ----------------------
-    user: Optional["User"] = Relationship(back_populates="student")
+    
+    # Explicitly specify which foreign key to use (String format)
+    user: Optional["User"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={
+            "foreign_keys": "Student.user_id" 
+        }
+    )
+    
     school: Optional["School"] = Relationship(back_populates="students")
     
+    # Relationship to access Dept name
+    department: Optional["Department"] = Relationship(back_populates="students")
     
     applications: List["Application"] = Relationship(back_populates="student")

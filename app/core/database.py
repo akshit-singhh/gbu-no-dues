@@ -1,22 +1,20 @@
-# app/core/database.py
-
 import os
 import ssl
-from dotenv import load_dotenv
 from typing import AsyncGenerator
 
+from dotenv import load_dotenv
 from loguru import logger
-from sqlmodel import SQLModel
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine
+    create_async_engine,
 )
-from sqlalchemy import text
+from sqlmodel import SQLModel
 
-# ----------------------------------------------------
-# Load environment
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 1. ENVIRONMENT CONFIGURATION
+# -----------------------------------------------------------------------------
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -24,70 +22,58 @@ if not DATABASE_URL:
     raise RuntimeError("❌ DATABASE_URL is not set")
 
 
-# ----------------------------------------------------
-# SSL Context (Relaxed for Cloud Poolers)
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 2. SSL CONTEXT
+# -----------------------------------------------------------------------------
 def make_ssl_context():
+    """
+    Creates a standard SSL context for cloud database connections.
+    """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
 
-# ----------------------------------------------------
-# AsyncPG Driver Configuration (Supabase Specific)
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 3. CONNECTION ARGUMENTS
+# -----------------------------------------------------------------------------
+# Since we are using Session Mode (Port 5432), we can use standard settings.
+# We no longer need to disable prepared statements.
 connect_args = {
     "ssl": make_ssl_context(),
-    
-    # ⚠️ CRITICAL: Disable prepared statements. 
-    # Supabase Transaction Mode (port 6543/5432 pooler) does NOT support them.
-    "statement_cache_size": 0,
-    
-    # ⚠️ CRITICAL: Increase connection handshake timeout.
-    # Default is often too short for waking up dormant cloud DBs.
-    "timeout": 30,          
-    
-    # ⚠️ CRITICAL: Increase query execution timeout.
-    "command_timeout": 60,  
+    "server_settings": {
+        "jit": "off",          # Optimization: Disables JIT compilation for faster simple queries
+        "timezone": "UTC",     # Force UTC for consistency across regions
+        "application_name": "gbu_no_dues_prod"
+    }
 }
 
-logger.info("🔄 Configuring Database Engine (Supabase Pooler Mode)")
 
-
-# ----------------------------------------------------
-# Engine Configuration
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 4. ENGINE CONFIGURATION
+# -----------------------------------------------------------------------------
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,  # Set True only for local debugging
+    echo=False,                # Disable SQL logging in production for performance
     future=True,
     connect_args=connect_args,
     
-    # 1. HEALTH CHECKS ("The Heartbeat")
-    # Before handing a connection to the app, run "SELECT 1".
-    # If it fails, drop the connection and get a fresh one. Fixes "Closed Connection" errors.
-    pool_pre_ping=True,
-
-    # 2. STALE CONNECTION RECYCLING
-    # Cloud load balancers kill idle connections silently after ~5 mins.
-    # We recycle them locally every 4 mins (240s) to stay ahead of the kill.
-    pool_recycle=240,
-
-    # 3. POOL SIZE (Concurrency)
-    # Keep 20 connections open. Allow bursting up to 30 temporarily.
-    pool_size=20,
-    max_overflow=10,
-    
-    # 4. POOL TIMEOUT
-    # If all 30 connections are busy, wait 30s before throwing an error.
-    pool_timeout=30
+    # Connection Pool Settings (Optimized for Supabase Session Mode)
+    # Supabase allows ~20-60 concurrent session connections on small tiers.
+    # We keep this conservative to avoid "Too many clients" errors.
+    pool_size=10,              # Keep 10 stable connections
+    max_overflow=10,           # Allow bursts up to 20 temporarily
+    pool_recycle=1800,         # Recycle every 30 mins (Standard for Session Mode)
+    pool_pre_ping=True,        # Health check before use (Heartbeat)
+    pool_timeout=30,           # Wait up to 30s for a slot
+    pool_use_lifo=True         # Reuse hot connections for better performance
 )
 
 
-# ----------------------------------------------------
-# Session Factory
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 5. SESSION FACTORY
+# -----------------------------------------------------------------------------
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -96,44 +82,44 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-# ----------------------------------------------------
-# Dependency Injection (Used in API Routers)
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 6. DEPENDENCY INJECTION
+# -----------------------------------------------------------------------------
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    FastAPI Dependency that yields a database session.
-    Ensures session is closed even if an error occurs.
+    FastAPI Dependency to yield a database session.
+    Automatically handles commit/rollback logic via context manager.
     """
     async with AsyncSessionLocal() as session:
         try:
             yield session
         except Exception as e:
-            logger.error(f"⚠️ Database Session Rollback: {str(e)}")
+            logger.error(f"⚠️ Database Transaction Rollback: {e}")
             await session.rollback()
             raise
         finally:
             await session.close()
 
 
-# ----------------------------------------------------
-# Initialization & Health Checks
-# ----------------------------------------------------
+# -----------------------------------------------------------------------------
+# 7. LIFECYCLE HELPERS (Startup/Shutdown)
+# -----------------------------------------------------------------------------
 async def init_db():
-    """Creates tables if they don't exist (Dev Mode Only)."""
+    """Initializes database tables. Should be run once on startup."""
     try:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
-        logger.info("✅ Database Tables Verified")
+        logger.info("✅ Database Schema Synced (Session Mode)")
     except Exception as e:
-        logger.error(f"❌ DB Init Failed: {e}")
+        logger.critical(f"❌ DB Init Failed: {e}")
+        raise
 
 async def test_connection():
-    """Simple ping to verify connectivity on startup."""
+    """Simple health check to verify latency and connectivity."""
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-            logger.info("✅ Database Connection Established")
+            logger.info("🚀 Database Connected (Session Mode)")
     except Exception as e:
-        logger.critical(f"❌ Database Connection Failed: {e}")
-        # We re-raise here so the app crashes early if DB is unreachable
+        logger.critical(f"❌ Connection Failed: {e}")
         raise e

@@ -1,6 +1,6 @@
 # app/api/endpoints/auth.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Cookie, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text
 from sqlmodel import select, or_
@@ -13,9 +13,8 @@ import csv
 import io
 import hashlib
 from app.core.config import settings
-# Rate Limiting
 from app.core.rate_limiter import limiter
-from app.schemas.user import UserRead, UserUpdate, UserListResponse
+from app.core.security import get_password_hash 
 
 # Schemas
 from app.schemas.auth import (
@@ -25,15 +24,16 @@ from app.schemas.auth import (
     SchoolCreateRequest,
     DepartmentCreateRequest
 )
-from app.schemas.user import UserRead, UserUpdate
+from app.schemas.user import UserRead, UserUpdate, UserListResponse
 from app.schemas.student import StudentRead
 from app.schemas.audit import AuditLogRead
 
 from app.core.storage import get_signed_url
+
 # Models
 from app.models.user import UserRole, User
-from app.models.school import School
-from app.models.department import Department
+from app.models.school import School          
+from app.models.department import Department  
 from app.models.audit import AuditLog
 from app.models.application import Application 
 from app.models.application_stage import ApplicationStage 
@@ -52,52 +52,34 @@ from app.services.auth_service import (
 )
 from app.services.student_service import list_students
 
-# Deps
-# ✅ UPDATED: Imported require_admin instead of require_super_admin
 from app.api.deps import get_db_session, get_current_user, require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["Auth (Admin)"])
 
 
 # ----------------------------------------------------------------
-# HELPER: Verify Captcha
-# ----------------------------------------------------------------
-def verify_captcha_hash(user_input: str, cookie_hash: str) -> bool:
-    if not user_input or not cookie_hash:
-        return False
-    
-    # Normalize input and recreate the hash using the App Secret
-    normalized = user_input.strip().upper()
-    raw_str = f"{normalized}{settings.SECRET_KEY}"
-    calculated_hash = hashlib.sha256(raw_str.encode()).hexdigest()
-    
-    return calculated_hash == cookie_hash
-
-
-# ----------------------------------------------------------------
 # LOGIN (Protected with Rate Limit)
 # ----------------------------------------------------------------
 @router.post("/login", response_model=TokenWithUser)
-@limiter.limit("10/minute")  # <--- RATE LIMIT: 10 attempts per minute per IP
+@limiter.limit("10/minute") 
 async def login(
-    request: Request,  # <--- Required for limiter
+    request: Request, 
     payload: LoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
-    # 1. Verify CAPTCHA (Check BODY)
     if not payload.captcha_hash:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="CAPTCHA hash missing."
-        )
+        raise HTTPException(status_code=400, detail="CAPTCHA hash missing.")
     
-    if not verify_captcha_hash(payload.captcha_input, payload.captcha_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Invalid CAPTCHA code."
-        )
+    # Helper to verify captcha (ensure this function is defined or imported)
+    def verify_captcha_hash(user_input: str, cookie_hash: str) -> bool:
+        if not user_input or not cookie_hash: return False
+        normalized = user_input.strip().upper()
+        raw_str = f"{normalized}{settings.SECRET_KEY}"
+        return hashlib.sha256(raw_str.encode()).hexdigest() == cookie_hash
 
-    # 2. Authenticate
+    if not verify_captcha_hash(payload.captcha_input, payload.captcha_hash):
+        raise HTTPException(status_code=400, detail="Invalid CAPTCHA code.")
+
     user = await authenticate_user(session, payload.email, payload.password)
 
     if not user:
@@ -107,24 +89,94 @@ async def login(
 
 
 # ===================================================================
-# 1. SCHOOL MANAGEMENT
+# REGISTER USER (The Main Creation Endpoint)
 # ===================================================================
+@router.post("/register-user", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def register_user(
+    data: RegisterRequest,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin), 
+):
+    """
+    Creates a new user (Admin, Dean, HOD, Staff).
+    Accepts 'school_code' or 'department_code' for robust ID resolution.
+    """
+    # 1. Check Email Duplication
+    existing = await get_user_by_email(session, data.email)
+    if existing:
+        raise HTTPException(400, detail="Email already exists")
 
+    if data.role == UserRole.Admin:
+         # Optional: Redirect to specialized endpoint or allow here with checks
+         pass 
+
+    # 2. RESOLVE CODES TO IDs
+    final_school_id = data.school_id # Fallback
+    final_dept_id = data.department_id # Fallback
+
+    # Resolve School Code (e.g., 'SOE')
+    if data.school_code:
+        res = await session.execute(select(School).where(School.code == data.school_code.upper()))
+        school = res.scalar_one_or_none()
+        if not school:
+            raise HTTPException(400, f"Invalid School Code: {data.school_code}")
+        final_school_id = school.id
+
+    # Resolve Department Code (e.g., 'CSE', 'LIB')
+    if data.department_code:
+        res = await session.execute(select(Department).where(Department.code == data.department_code.upper()))
+        dept = res.scalar_one_or_none()
+        if not dept:
+            raise HTTPException(400, f"Invalid Department Code: {data.department_code}")
+        final_dept_id = dept.id
+
+    # 3. VALIDATE ROLE RULES
+    if data.role == UserRole.Dean:
+        if not final_school_id:
+            raise HTTPException(400, "Dean requires a valid 'school_code'.")
+        final_dept_id = None 
+
+    elif data.role == UserRole.HOD:
+        if not final_dept_id:
+            raise HTTPException(400, "HOD requires a valid 'department_code'.")
+        final_school_id = None 
+
+    elif data.role == UserRole.Staff:
+        if not final_school_id and not final_dept_id:
+            raise HTTPException(400, "Staff must have either 'school_code' or 'department_code'.")
+        if final_school_id and final_dept_id:
+             raise HTTPException(400, "Staff cannot belong to both School and Department.")
+
+    # 4. CALL SERVICE
+    new_user = await create_user(
+        session=session,
+        name=data.name,
+        email=data.email,
+        password=data.password,
+        role=data.role,
+        department_id=final_dept_id,
+        school_id=final_school_id
+    )
+    
+    return new_user
+
+
+# ===================================================================
+# SCHOOL MANAGEMENT
+# ===================================================================
 @router.post("/schools", status_code=status.HTTP_201_CREATED)
 async def create_school(
     payload: SchoolCreateRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     res = await session.execute(
-        select(School).where(
-            or_(School.name == payload.name, School.code == payload.code)
-        )
+        select(School).where(or_(School.name == payload.name, School.code == payload.code))
     )
     if res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="School with this name or code already exists")
 
-    new_school = School(name=payload.name, code=payload.code)
+    new_school = School(name=payload.name, code=payload.code.upper())
     session.add(new_school)
     await session.commit()
     await session.refresh(new_school)
@@ -133,7 +185,7 @@ async def create_school(
 @router.get("/schools", response_model=List[School])
 async def list_schools(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     result = await session.execute(select(School).order_by(School.name))
     return result.scalars().all()
@@ -142,7 +194,7 @@ async def list_schools(
 async def delete_school(
     school_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     school = await session.get(School, school_id)
     if not school:
@@ -157,20 +209,25 @@ async def delete_school(
 
 
 # ===================================================================
-# 2. DEPARTMENT MANAGEMENT
+# DEPARTMENT MANAGEMENT
 # ===================================================================
-
 @router.post("/departments", status_code=status.HTTP_201_CREATED)
 async def create_department(
     payload: DepartmentCreateRequest,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
-    res = await session.execute(select(Department).where(Department.name == payload.name))
+    res = await session.execute(
+        select(Department).where(or_(Department.name == payload.name, Department.code == payload.code))
+    )
     if res.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Department with this name already exists")
+        raise HTTPException(status_code=400, detail="Department with this name or code already exists")
 
-    new_dept = Department(name=payload.name, phase_number=payload.phase_number)
+    new_dept = Department(
+        name=payload.name, 
+        code=payload.code.upper(), 
+        phase_number=payload.phase_number
+    )
     session.add(new_dept)
     await session.commit()
     await session.refresh(new_dept)
@@ -179,7 +236,7 @@ async def create_department(
 @router.get("/departments", response_model=List[Department])
 async def list_departments(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     result = await session.execute(select(Department).order_by(Department.phase_number, Department.name))
     return result.scalars().all()
@@ -188,7 +245,7 @@ async def list_departments(
 async def delete_department(
     dept_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     dept = await session.get(Department, dept_id)
     if not dept:
@@ -203,85 +260,15 @@ async def delete_department(
 
 
 # -------------------------------------------------------------------
-# REGISTER SUPER ADMIN (Renamed for Clarity, kept logic)
-# -------------------------------------------------------------------
-@router.post("/register-super-admin", response_model=UserRead)
-async def register_admin_account(
-    data: RegisterRequest,
-    session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
-):
-    if data.role != UserRole.Admin:
-        raise HTTPException(400, detail="This endpoint only creates Admin accounts.")
-
-    existing = await get_user_by_email(session, data.email)
-    if existing:
-        raise HTTPException(400, detail="Email already exists")
-
-    user = await create_user(
-        session=session,
-        name=data.name,
-        email=data.email,
-        password=data.password,
-        role=UserRole.Admin,
-        department_id=None,
-        school_id=None
-    )
-    return user
-
-
-# -------------------------------------------------------------------
-# REGISTER NORMAL USER (Dean / Staff)
-# -------------------------------------------------------------------
-@router.post("/register-user", response_model=UserRead)
-async def register_user(
-    data: RegisterRequest,
-    session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
-):
-    if data.role == UserRole.Admin:
-        raise HTTPException(400, detail="Use /register-super-admin for Admin accounts.")
-
-    existing = await get_user_by_email(session, data.email)
-    if existing:
-        raise HTTPException(400, detail="Email already exists")
-
-    if data.role == UserRole.Staff:
-        if not data.department_id:
-            raise HTTPException(400, detail="department_id is required for Staff users")
-        if data.school_id:
-            raise HTTPException(400, detail="Staff cannot be assigned to a School (use Dean for that)")
-
-    elif data.role == UserRole.Dean:
-        if not data.school_id:
-            raise HTTPException(400, detail="school_id is required for Dean users.")
-        if data.department_id:
-            raise HTTPException(400, detail="Deans cannot be assigned to a Department (use Staff for that)")
-
-    user = await create_user(
-        session=session,
-        name=data.name,
-        email=data.email,
-        password=data.password,
-        role=data.role,
-        department_id=data.department_id,
-        school_id=data.school_id 
-    )
-    return user
-
-# -------------------------------------------------------------------
-# USER MANAGEMENT
+# USER MANAGEMENT (List / Update / Delete)
 # -------------------------------------------------------------------
 @router.get("/users", response_model=UserListResponse)
 async def get_all_users(
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
-    # Construct query with specific load options to ensure Pydantic has data
     query = select(User)
-    
-    # Eager load relationships to prevent MissingGreenlet errors
     query = query.options(
         selectinload(User.department),
         selectinload(User.school),
@@ -294,9 +281,8 @@ async def get_all_users(
     query = query.order_by(User.created_at.desc())
     
     result = await session.execute(query)
-    users = result.scalars().all() # Fetch the list
+    users = result.scalars().all() 
 
-    # Return the new object structure
     return {
         "total": len(users),
         "users": users
@@ -306,7 +292,7 @@ async def get_all_users(
 async def remove_user(
     user_id: UUID,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     try:
         await delete_user_by_id(session, str(user_id))
@@ -319,13 +305,13 @@ async def update_user_endpoint(
     user_id: str,
     data: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
-    # Validation
-    if data.role == UserRole.Staff and not data.department_id:
-        raise HTTPException(400, detail="department_id is required for Staff users")
-    if data.role == UserRole.Dean and not data.school_id:
-        raise HTTPException(400, detail="school_id is required for Dean users")
+    if data.role == UserRole.Dean and not data.school_id and not data.school_code:
+        raise HTTPException(400, detail="school_id/code is required for Dean users")
+    
+    if data.role == UserRole.HOD and not data.department_id and not data.department_code:
+        raise HTTPException(400, detail="department_id/code is required for HOD users")
 
     try:
         return await update_user(
@@ -349,10 +335,6 @@ async def me(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """
-    Re-fetches the user with eager loading to ensure
-    school/department details are available for the schema.
-    """
     query = (
         select(User)
         .options(
@@ -372,12 +354,8 @@ async def me(
 async def admin_get_student_by_id_or_roll(
     input_id: str,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
-    """
-    Get student details AND their latest application status.
-    Returns a SIGNED URL for the proof document.
-    """
     # 1. SMART SEARCH (Find Student)
     is_uuid = False
     try:
@@ -396,7 +374,6 @@ async def admin_get_student_by_id_or_roll(
             )
         )
     
-    # Eager load school for student details
     query = query.options(selectinload(Student.school))
 
     result = await session.execute(query)
@@ -434,7 +411,7 @@ async def get_audit_logs(
     actor_role: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
     if action:
@@ -451,7 +428,7 @@ async def get_audit_logs(
 @router.get("/dashboard-stats")
 async def get_dashboard_stats(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     # 1. General Application Counts
     status_query = select(Application.status, func.count(Application.id)).group_by(Application.status)
@@ -490,22 +467,22 @@ async def get_dashboard_stats(
 
 
 # ===================================================================
-# GLOBAL SEARCH (OPTIMIZED + RATE LIMITED)
+# GLOBAL SEARCH
 # ===================================================================
 @router.get("/search", response_model=Dict[str, Any])
-@limiter.limit("60/minute")  # <--- RATE LIMIT: 60 searches per minute (1/sec)
+@limiter.limit("60/minute") 
 async def admin_global_search(
-    request: Request, # <--- Required for limiter
+    request: Request, 
     q: str = Query(..., min_length=3),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     term = f"%{q.lower()}%"
     
     # 1. Search Students
     student_query = (
         select(Student)
-        .options(selectinload(Student.school)) # Load school to prevent crashes
+        .options(selectinload(Student.school)) 
         .where(
             or_(
                 func.lower(Student.full_name).like(term),
@@ -522,7 +499,6 @@ async def admin_global_search(
     # 2. Search Applications (UUID or Display ID)
     app_results = []
     
-    # Clean up input for Smart ID search
     clean_q = q.strip().upper().replace(" ", "").replace("-", "")
 
     try:
@@ -530,7 +506,7 @@ async def admin_global_search(
         uuid_obj = UUID(q)
         app_query = (
             select(Application)
-            .options(selectinload(Application.student)) # Eager load student
+            .options(selectinload(Application.student)) 
             .where(Application.id == uuid_obj)
         )
         app_res = await session.execute(app_query)
@@ -541,7 +517,7 @@ async def admin_global_search(
         
         display_id_query = (
             select(Application)
-            .options(selectinload(Application.student)) # Eager load student
+            .options(selectinload(Application.student)) 
             .where(Application.display_id.ilike(f"%{clean_q}%"))
         )
         display_res = await session.execute(display_id_query)
@@ -552,7 +528,7 @@ async def admin_global_search(
             student_ids = [s.id for s in students]
             student_app_query = (
                 select(Application)
-                .options(selectinload(Application.student)) # Eager load student
+                .options(selectinload(Application.student)) 
                 .where(Application.student_id.in_(student_ids))
                 .order_by(Application.created_at.desc())
             )
@@ -573,39 +549,25 @@ async def admin_global_search(
 
 
 # ===================================================================
-# ANALYTICS (FIXED: Normalized Names)
+# ANALYTICS
 # ===================================================================
 @router.get("/analytics/performance")
 async def get_department_performance(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     """
     Returns performance stats grouped by Department.
-    Normalizes inconsistent names (e.g., 'Lab' -> 'Laboratories').
     """
     query = """
         WITH clean_data AS (
             SELECT 
-                -- 1. NORMALIZE NAMES
                 CASE 
-                    -- Merge 'lab', 'labs' -> 'Laboratories'
-                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('lab', 'labs', 'laboratories', 'laboratory') 
-                        THEN 'Laboratories'
-                    
-                    -- Merge 'account', 'accounts' -> 'Accounts'
-                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('account', 'accounts') 
-                        THEN 'Accounts'
-                    
-                    -- Stylize 'crc' -> 'CRC'
-                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'crc' 
-                        THEN 'CRC'
-                    
-                    -- Stylize 'dean' -> 'School Dean'
-                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'dean' 
-                        THEN 'School Dean'
-                        
-                    -- Default: Capitalize first letter (e.g., 'hostel' -> 'Hostel')
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('lab', 'labs', 'laboratories', 'laboratory') THEN 'Laboratories'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) IN ('account', 'accounts') THEN 'Accounts'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'crc' THEN 'CRC'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'dean' THEN 'School Dean'
+                    WHEN LOWER(COALESCE(d.name, s.verifier_role)) = 'hod' THEN 'Head of Department'
                     ELSE INITCAP(COALESCE(d.name, s.verifier_role))
                 END as dept_name,
                 
@@ -617,22 +579,15 @@ async def get_department_performance(
         )
         SELECT 
             dept_name,
-            
-            -- Avg hours (only for processed items)
             COALESCE(AVG(CASE 
                 WHEN status IN ('approved', 'rejected') 
                 THEN EXTRACT(EPOCH FROM (updated_at - created_at))/3600 
                 ELSE NULL 
             END), 0)::numeric(10,2) as avg_hours,
-
-            -- Exact Counts
             COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
             COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_count,
             COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
-            
-            -- Total Processed
             COUNT(CASE WHEN status IN ('approved', 'rejected') THEN 1 END) as total_processed
-
         FROM clean_data
         GROUP BY dept_name
         ORDER BY pending_count DESC, total_processed DESC
@@ -649,7 +604,7 @@ async def get_department_performance(
 @router.get("/reports/export-cleared")
 async def export_cleared_students(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), # ✅ Admin only
+    _: User = Depends(require_admin), 
 ):
     query = (
         select(Application, Student, School, Certificate)
@@ -688,7 +643,6 @@ async def export_cleared_students(
             student.mobile_number,
             student.email,
             app.updated_at.strftime("%Y-%m-%d") if app.updated_at else "N/A",
-            
             app.display_id or "N/A",
             str(app.id) 
         ])

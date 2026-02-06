@@ -1,6 +1,6 @@
 # app/schemas/user.py
 
-from typing import Optional, Any, List  # <--- Added List
+from typing import Optional, Any, List
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, ConfigDict, model_validator
 from app.models.user import UserRole
@@ -19,8 +19,10 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     role: UserRole
-    department_id: Optional[int] = None   # Required if Role = Staff
-    school_id: Optional[int] = None       # Required if Role = Dean
+    
+    # Use CODES (Robust) instead of IDs (Fragile)
+    department_code: Optional[str] = None   
+    school_code: Optional[str] = None       
 
 
 # ---------------------------------------------------------
@@ -30,33 +32,44 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     role: Optional[UserRole] = None
+    
+    # Allow updating via Codes
+    department_code: Optional[str] = None
+    school_code: Optional[str] = None
+    
+    # IDs kept for backward compatibility if needed
     department_id: Optional[int] = None
     school_id: Optional[int] = None
 
 
 # ---------------------------------------------------------
-# READ USER (response)
+# READ USER (Response)
 # ---------------------------------------------------------
 class UserRead(UserBase):
     id: UUID
     role: UserRole | str
     
+    # IDs (For Frontend Keys)
     department_id: Optional[int] = None
-    department_name: Optional[str] = None
-    
     school_id: Optional[int] = None
+
+    # Names (For Display)
+    department_name: Optional[str] = None
     school_name: Optional[str] = None
+
+    # Codes (For Logic/Consistency)
+    department_code: Optional[str] = None
+    school_code: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
-    # ✅ ROBUST FIX: Convert to Dict
+    # Extracts Name AND Code from relationships
     @model_validator(mode='before')
     @classmethod
     def flatten_details(cls, data: Any) -> Any:
         """
         Converts the SQLAlchemy object to a Dictionary and populates
-        missing fields (school_name, etc.) manually.
-        This bypasses the "object has no field" error.
+        missing fields (school_name, school_code, etc.) manually.
         """
         # If it's already a dict, just return it
         if isinstance(data, dict):
@@ -64,25 +77,29 @@ class UserRead(UserBase):
 
         # 1. Initialize variables
         dept_name = None
+        dept_code = None
+        
         sch_name = None
+        sch_code = None
+        
         # Default IDs from the User object
         sch_id = getattr(data, "school_id", None)
         dept_id = getattr(data, "department_id", None)
 
-        # 2. Logic: Extract Names from Relationships
+        # 2. Logic: Extract Names & Codes from Relationships
         
-        # A. Department (Staff)
+        # A. Department (Staff / HOD)
         if getattr(data, "department", None):
             dept_name = data.department.name
+            dept_code = getattr(data.department, "code", None)
 
         # B. School (Dean - Direct Link)
         if getattr(data, "school", None):
             sch_name = data.school.name
+            sch_code = getattr(data.school, "code", None)
 
         # C. Student School (Indirect Link)
-        # Check role safely (handle Enum or string)
         role_val = getattr(data, "role", "")
-        # If role is Enum, get value, else string
         role_str = str(role_val.value if hasattr(role_val, "value") else role_val).lower()
 
         if "student" in role_str:
@@ -91,22 +108,30 @@ class UserRead(UserBase):
                 # Override with Student's School Info
                 sch_id = student_obj.school_id
                 sch_name = student_obj.school.name
+                sch_code = getattr(student_obj.school, "code", None)
 
-        # 3. Create the Safe Dictionary
-        # We manually construct the dict that matches UserRead fields
+        # 3. Return the fully populated dictionary
         return {
             "id": data.id,
             "name": data.name,
             "email": data.email,
             "role": data.role,
+            
+            # IDs
             "department_id": dept_id,
-            "department_name": dept_name,
             "school_id": sch_id,
-            "school_name": sch_name
+            
+            # Names
+            "department_name": dept_name,
+            "school_name": sch_name,
+            
+            # Codes
+            "department_code": dept_code,
+            "school_code": sch_code
         }
 
 # ---------------------------------------------------------
-# USER LIST RESPONSE (For Pagination/Total Count)
+# USER LIST RESPONSE
 # ---------------------------------------------------------
 class UserListResponse(BaseModel):
     total: int

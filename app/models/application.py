@@ -32,7 +32,6 @@ class Application(SQLModel, table=True):
     )
 
     # Readable ID (e.g., ND235ICS066A7)
-    # Indexed for fast searching, Unique to prevent duplicates
     display_id: Optional[str] = Field(
         default=None, 
         sa_column=Column(String, unique=True, index=True)
@@ -45,8 +44,10 @@ class Application(SQLModel, table=True):
     # Official remarks from Approvers (e.g. "Rejected due to missing fee")
     remarks: Optional[str] = Field(default=None)
 
+    # ADDED To store the Student's reply when resubmitting
+    student_remarks: Optional[str] = Field(default=None)
 
-    #  Stores the internal path or Public URL for the uploaded PDF
+    # Stores the internal path or Public URL for the uploaded PDF
     proof_document_url: Optional[str] = Field(default=None, nullable=True)
 
     current_stage_order: int = Field(default=1)
@@ -57,7 +58,7 @@ class Application(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
-    #  UPDATED: Automatically updates timestamp on modification
+    # Automatically updates timestamp on modification
     updated_at: datetime = Field(
         default_factory=datetime.utcnow,
         sa_column=Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -19,23 +19,25 @@ class UserRole(str, Enum):
     # ------------------------------------------------------------
     # SYSTEM ROLES
     # ------------------------------------------------------------
-    # "Admin" now represents the highest level authority (Merged with SuperAdmin)
     Admin = "admin"              
     Student = "student"          
     
-    # Generic Staff Role
+    # Generic Staff Role (Used for Library, Accounts, School Office, etc.)
     Staff = "staff"
 
     # ------------------------------------------------------------
     # APPROVAL AUTHORITY ROLES
     # ------------------------------------------------------------
     Dean = "dean"                # School Dean
-    Library = "library"          # Library Staff
-    Hostel = "hostel"            # Hostel Warden
-    Lab = "lab"                  # Lab In-charge
-    Account = "account"          # Accounts Department
-    Sports = "sports"            # Sports Officer
-    CRC = "crc"                  # Corporate Resource Center
+    HOD = "hod"                  # Academic Head (Flow B)
+
+    # Legacy Roles
+    Library = "library"          
+    Hostel = "hostel"            
+    Lab = "lab"                  
+    Account = "account"          
+    Sports = "sports"            
+    CRC = "crc"                  
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
@@ -49,7 +51,6 @@ class User(SQLModel, table=True):
     email: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
     password_hash: str = Field(sa_column=Column(String, nullable=False))
     
-    # Role maps to the Enum values defined above
     role: UserRole = Field(sa_column=Column(String, default=UserRole.Student.value))
     
     is_active: bool = Field(default=True)
@@ -58,7 +59,8 @@ class User(SQLModel, table=True):
     # --------------------------------------------------------
     # FOREIGN KEYS
     # --------------------------------------------------------
-    # Link to Student Profile
+    # Note: We keep student_id for quick lookup, but the Relationship 
+    # below is the source of truth for the link.
     student_id: Optional[UUID] = Field(default=None, foreign_key="students.id")
 
     # Routing Foreign Keys (For Deans/Staff)
@@ -74,7 +76,14 @@ class User(SQLModel, table=True):
     # --------------------------------------------------------
     # RELATIONSHIPS
     # --------------------------------------------------------
-    student: Optional["Student"] = Relationship(back_populates="user")
+    
+    #  Explicitly specify foreign_keys to resolve ambiguity
+    student: Optional["Student"] = Relationship(
+        back_populates="user",
+        sa_relationship_kwargs={
+            "foreign_keys": "Student.user_id"
+        }
+    )
     
     # Relationship to stages verified by this user
     verified_stages: List["ApplicationStage"] = Relationship(back_populates="verifier")
@@ -82,5 +91,5 @@ class User(SQLModel, table=True):
     # School Link (For Deans)
     school: Optional["School"] = Relationship(back_populates="users")
 
-    # Department Link (For Staff)
+    # Department Link (For Staff/HODs)
     department: Optional["Department"] = Relationship(back_populates="users")

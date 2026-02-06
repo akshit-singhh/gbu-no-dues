@@ -38,7 +38,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 # ===================================================================
-# 1. CERTIFICATE VERIFICATION (ROBUST VERSION)
+# 1. CERTIFICATE VERIFICATION
 # ===================================================================
 @router.get("/verify/{certificate_id}", response_class=HTMLResponse)
 async def verify_certificate(
@@ -46,34 +46,22 @@ async def verify_certificate(
     certificate_id: str,
     session: AsyncSession = Depends(get_db_session)
 ):
-    """
-    Verifies certificate step-by-step to avoid Inner Join failures.
-    """
-    
-    # Clean the input (Remove hidden spaces/newlines)
+    # Clean the input
     clean_id = certificate_id.strip()
-    print(f"🔍 DEBUG: Searching for Certificate ID: '{clean_id}'")
-
-    # Helper for failed state
+    
     def render_fail(msg):
-        print(f"❌ DEBUG: Verification Failed - {msg}")
         return templates.TemplateResponse("verification.html", {
             "request": request,
             "valid": False,
             "message": msg
         })
 
-    # ---------------------------------------------------------
-    # STEP 1: Find Certificate (No Joins yet)
-    # ---------------------------------------------------------
+    # STEP 1: Find Certificate
     query = select(Certificate)
-    
     try:
-        # Try as UUID
         cert_uuid = UUID(clean_id)
         query = query.where(Certificate.id == cert_uuid)
     except ValueError:
-        # Try as String (Certificate Number)
         query = query.where(Certificate.certificate_number == clean_id)
 
     result = await session.execute(query)
@@ -82,9 +70,7 @@ async def verify_certificate(
     if not certificate:
         return render_fail(f"Certificate record not found for ID: {clean_id}")
 
-    # ---------------------------------------------------------
-    # STEP 2: Find Linked Application
-    # ---------------------------------------------------------
+    # STEP 2: Find Application
     app_res = await session.execute(
         select(Application).where(Application.id == certificate.application_id)
     )
@@ -93,9 +79,7 @@ async def verify_certificate(
     if not application:
         return render_fail("Certificate exists, but linked Application is missing.")
 
-    # ---------------------------------------------------------
-    # STEP 3: Find Linked Student
-    # ---------------------------------------------------------
+    # STEP 3: Find Student
     student_res = await session.execute(
         select(Student).where(Student.id == application.student_id)
     )
@@ -104,26 +88,19 @@ async def verify_certificate(
     if not student:
         return render_fail("Application exists, but linked Student data is missing.")
 
-    # ---------------------------------------------------------
-    # STEP 4: Render Success
-    # ---------------------------------------------------------
-    print(f"✅ DEBUG: Verification Successful for {student.full_name}")
-    
+    # STEP 4: Success
     return templates.TemplateResponse("verification.html", {
         "request": request,
         "valid": True,
         "student": student,
-        
-        # Pass Application (template can now use application.display_id)
         "application": application, 
-        
         "certificate": certificate,
         "generation_date": certificate.generated_at.strftime("%d %B, %Y")
     })
 
 
 # ===================================================================
-# 2. PASSWORD RESET ENDPOINTS (UNCHANGED)
+# 2. PASSWORD RESET ENDPOINTS (With 5-Min Expiry Logic)
 # ===================================================================
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
@@ -133,9 +110,12 @@ async def forgot_password(
     session: AsyncSession = Depends(get_db_session)
 ):
     try:
+        # Generates OTP and sets expiry to 5 mins in service layer
         otp, user = await request_password_reset(session, payload.email)
+        
         email_data = {"name": user.name, "email": user.email, "otp": otp}
         background_tasks.add_task(send_reset_password_email, email_data)
+        
         return {"message": "OTP sent successfully. Please check your mail."}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -146,9 +126,12 @@ async def verify_reset_otp_endpoint(
     payload: VerifyOTPRequest, 
     session: AsyncSession = Depends(get_db_session)
 ):
+    # Verifies if OTP matches AND if it is within the 5-minute window
     is_valid = await verify_reset_otp(session, payload.email, payload.otp)
+    
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    
     return {"message": "OTP verified successfully"}
 
 
@@ -158,6 +141,7 @@ async def reset_password(
     session: AsyncSession = Depends(get_db_session)
 ):
     try:
+        # Final check before resetting
         await finalize_password_reset(session, payload.email, payload.otp, payload.new_password)
         return {"message": "Password updated successfully"}
     except ValueError as e:
