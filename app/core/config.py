@@ -7,7 +7,6 @@ class Settings(BaseSettings):
     # DATABASE CONFIGURATION
     # ------------------------------------------------------------
     DATABASE_URL: str
-    # If DEV and you hit SSL cert issues on Windows, set DB_SSL_VERIFY=false in .env
     DB_SSL_VERIFY: bool = True
     db_ca_cert_path: Optional[str] = None
 
@@ -16,13 +15,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    ENV: str = "prod"  # "dev" or "prod"
+    ENV: str = "prod"  # Defaults to prod, must be overridden to "dev" locally
 
     @computed_field
     @property
     def DEBUG(self) -> bool:
-        """Automatically sets DEBUG to True if ENV is 'dev'"""
-        return self.ENV.lower() == "dev"
+        return self.ENV.lower() == "prod"
 
     # ------------------------------------------------------------
     # FIRST ADMIN CONFIGURATION
@@ -34,7 +32,6 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     # BUSINESS LOGIC CONFIGURATION
     # ------------------------------------------------------------
-    # Ensure these match the 'code' column in your 'schools' table exactly.
     SCHOOLS_WITHOUT_LABS: Set[str] = {"SOL", "SOHSS", "SOM"} 
     SCHOOLS_WITHOUT_LIBRARY: Set[str] = {""}
 
@@ -51,16 +48,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     # FRONTEND / CORS CONFIGURATION
     # ------------------------------------------------------------
-    # 1. For Email Links (Single Base URL for clicking)
-    #    Defaults to localhost, but .env should override this in prod
-    FRONTEND_URL: str = "http://localhost:5173"
-
-    # 2. For CORS Middleware (Comma-separated list)
-    #    The .env file will provide: "https://nodues-swxb.vercel.app,http://localhost:5173"
-    FRONTEND_URLS: str = "http://localhost:5173"
-
-    # 3. Regex for dynamic deployments (Vercel previews, DevTunnels, etc.)
-    #    The .env file will provide the regex string.
+    # REMOVED DEFAULTS: These MUST be provided in Vercel/Env now
+    FRONTEND_URL: str  
+    FRONTEND_URLS: str 
     FRONTEND_REGEX: Optional[str] = None
 
     # ------------------------------------------------------------
@@ -75,7 +65,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",  # Prevents crashing if extra variables are in .env
+        extra="ignore",
         case_sensitive=False
     )
 
