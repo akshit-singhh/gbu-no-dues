@@ -1,3 +1,4 @@
+# CORE PYTHON PACKAGES
 aiosqlite==0.21.0
 alembic==1.17.1
 annotated-doc==0.0.4
@@ -37,7 +38,6 @@ MarkupSafe==3.0.3
 multidict==6.7.0
 packaging==25.0
 passlib==1.7.4
-pip-autoremove==0.10.0
 pluggy==1.6.0
 postgrest==2.24.0
 propcache==0.4.1
@@ -80,8 +80,8 @@ websockets==15.0.1
 win32_setctime==1.2.0
 wrapt==2.0.1
 yarl==1.22.0
+
+# PDF / IMAGE RELATED (PURE PYTHON)
 fpdf2==2.7.1
 Pillow==10.4.0
 xhtml2pdf==0.2.8
-
-
