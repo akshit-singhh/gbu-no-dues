@@ -59,7 +59,6 @@ python-multipart==0.0.5
 PyYAML==6.0.3
 qrcode==7.4.2
 realtime==2.24.0
-reportlab==3.6.12
 rsa==4.9.1
 six==1.17.0
 slowapi==0.1.9
@@ -84,4 +83,5 @@ yarl==1.22.0
 fpdf2==2.7.1
 Pillow==10.4.0
 xhtml2pdf==0.2.8
+
 
