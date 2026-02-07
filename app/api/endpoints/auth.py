@@ -15,7 +15,7 @@ import hashlib
 from app.core.config import settings
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash 
-
+from app.models.department import Department
 # Schemas
 from app.schemas.auth import (
     LoginRequest, 
@@ -599,17 +599,19 @@ async def get_department_performance(
 
 
 # ===================================================================
-# EXPORT REPORTS
+# EXPORT REPORTS (Updated: Replaced Batch with Department)
 # ===================================================================
 @router.get("/reports/export-cleared")
 async def export_cleared_students(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin), 
 ):
+    # 1. Update Query to join Department
     query = (
-        select(Application, Student, School, Certificate)
+        select(Application, Student, School, Certificate, Department)
         .join(Student, Application.student_id == Student.id)
         .join(School, Student.school_id == School.id)
+        .outerjoin(Department, Student.department_id == Department.id) # <--- Join Department
         .outerjoin(Certificate, Certificate.application_id == Application.id)
         .where(Application.status == "completed")
         .order_by(School.name, Student.roll_number)
@@ -620,15 +622,19 @@ async def export_cleared_students(
     output = io.StringIO()
     writer = csv.writer(output)
     
+    # 2. Update Headers
     writer.writerow([
         "Certificate Number", "Roll Number", "Enrollment No", "Student Name", 
-        "Father's Name", "Gender", "Category", "School", "Batch", 
+        "Father's Name", "Gender", "Category", "School", "Department", # <--- Changed from Batch
         "Admission Year", "Mobile", "Email", "Clearance Date", 
         "Application Ref (ID)", "System UUID" 
     ])
 
-    for app, student, school, cert in rows:
+    # 3. Write Rows
+    for app, student, school, cert, department in rows:
         cert_num = cert.certificate_number if cert else "PENDING"
+        dept_name = department.name if department else "N/A" # Safe access
+
         writer.writerow([
             cert_num,
             student.roll_number,
@@ -638,7 +644,7 @@ async def export_cleared_students(
             student.gender,
             student.category,
             school.name,
-            student.batch,
+            dept_name, # <--- Showing Department Name now
             student.admission_year,
             student.mobile_number,
             student.email,

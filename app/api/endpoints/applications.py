@@ -6,8 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
+from sqlalchemy import or_  # <--- ✅ REQUIRED for search logic
 from uuid import UUID
 from typing import Any, List, Optional
+from datetime import datetime
 
 # Deps & Auth
 from app.api.deps import get_db_session, get_application_or_404, get_current_user
@@ -99,7 +101,7 @@ async def get_my_pending_tasks(
         return []
 
 # ------------------------------------------------------------
-# CREATE APPLICATION (FIXED)
+# CREATE APPLICATION
 # ------------------------------------------------------------
 @router.post("/create", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
 async def create_application(
@@ -125,7 +127,7 @@ async def create_application(
     if not department:
         raise HTTPException(status_code=400, detail=f"Invalid Department Code: {payload.department_code}")
 
-    student.department_id = department.id # Save ID, not code
+    student.department_id = department.id 
 
     student.father_name = payload.father_name
     student.mother_name = payload.mother_name
@@ -225,7 +227,6 @@ async def get_my_application(
     total_stages = len(stages)
     approved_stages = sum(1 for s in stages if str(s.status) == str(ApplicationStatus.APPROVED.value))
     
-    # If the application is fully marked 'COMPLETED' (Accounts done), force 100%
     if str(app.status) == str(ApplicationStatus.COMPLETED.value):
         progress_percentage = 100
     elif total_stages > 0:
@@ -242,8 +243,6 @@ async def get_my_application(
     if app.proof_document_url:
         signed_proof_link = get_signed_url(app.proof_document_url)
 
-    # Department mapping
-    # We can pass None if it's gone.
     batch_val = getattr(app.student, 'batch', None)
 
     return {
@@ -297,27 +296,73 @@ async def get_my_application(
     }
 
 # ------------------------------------------------------------
-# GET APPLICATION STATUS
+# GET APPLICATION STATUS (✅ FIXED: Case Insensitive Search)
 # ------------------------------------------------------------
 @router.get("/status", status_code=200)
 async def get_application_status(
-    current_user: User = Depends(AllowRoles(UserRole.Student)),
+    # 1. Allow Admin & Student
+    current_user: User = Depends(AllowRoles(UserRole.Student, UserRole.Admin)),
     session: AsyncSession = Depends(get_db_session),
+    # 2. Admin Search Param (Optional)
+    search_query: Optional[str] = None 
 ) -> Any:
     
-    if not current_user.student_id:
-        raise HTTPException(status_code=400, detail="No student linked to account")
+    target_student_id = None
 
+    # --- A. STUDENT LOGIC (Unchanged) ---
+    if current_user.role == UserRole.Student:
+        if not current_user.student_id:
+            raise HTTPException(status_code=400, detail="No student linked to account")
+        target_student_id = current_user.student_id
+    
+    # --- B. ADMIN LOGIC (Search for Student) ---
+    elif current_user.role == UserRole.Admin:
+        if not search_query:
+            raise HTTPException(status_code=400, detail="Admin must provide 'search_query' (Roll No, Enrollment No, or ID)")
+        
+        # Clean the input
+        clean_q = search_query.strip()
+        
+        # Try finding the student using OR operator
+        stmt = select(Student).where(
+            or_(
+                Student.roll_number.ilike(clean_q),       # ✅ Case-Insensitive
+                Student.enrollment_number.ilike(clean_q), # ✅ Case-Insensitive
+                
+                # Heuristic to check if it's a valid UUID string before casting
+                Student.user_id == (UUID(clean_q) if clean_q.replace("-","").isalnum() and len(clean_q) > 20 else None),
+                Student.id == (UUID(clean_q) if clean_q.replace("-","").isalnum() and len(clean_q) > 20 else None)
+            )
+        )
+        res = await session.execute(stmt)
+        student = res.scalar_one_or_none()
+        
+        if not student:
+            # Fallback: Try partial name match (Case Insensitive)
+            stmt = select(Student).where(Student.full_name.ilike(f"%{clean_q}%"))
+            res = await session.execute(stmt)
+            student = res.scalars().first()
+
+        if not student:
+            raise HTTPException(status_code=404, detail=f"Student not found for query: {clean_q}")
+            
+        target_student_id = student.id
+    
+    else:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # --- C. FETCH APPLICATION (Common Logic) ---
     result = await session.execute(
         select(Application)
-        .where(Application.student_id == current_user.student_id)
+        .where(Application.student_id == target_student_id)
         .order_by(Application.created_at.desc())
     )
     app = result.scalars().first()
 
     if not app:
-        return {"application": None, "message": "No application found."}
+        return {"application": None, "message": "No application found for this student."}
 
+    # --- D. FETCH STAGES (Existing Logic) ---
     stage_result = await session.execute(
         select(ApplicationStage, Department.name)
         .outerjoin(Department, ApplicationStage.department_id == Department.id)
@@ -369,6 +414,10 @@ async def get_application_status(
         if parts: location_str = " | ".join(parts)
 
     return {
+        "student_info": { 
+             "name": student.full_name if 'student' in locals() and student else "Student",
+             "roll": student.roll_number if 'student' in locals() and student else "",
+        },
         "application": {
             "id": app.id,
             "display_id": app.display_id, 
@@ -424,7 +473,7 @@ async def download_certificate(
 
 
 # ------------------------------------------------------------
-# RESUBMIT APPLICATION (FIXED)
+# RESUBMIT APPLICATION
 # ------------------------------------------------------------
 @router.patch("/{application_id}/resubmit", response_model=ApplicationRead)
 async def resubmit_application(
@@ -496,8 +545,11 @@ async def resubmit_application(
         
         session.add(blocked_stage)
 
-    # 6. Update Application
+    # 6. Update Application (Status & Cleanup)
     app.status = ApplicationStatus.IN_PROGRESS
+    app.remarks = ""  # Clear the global rejection remark
+    app.updated_at = datetime.utcnow()
+
     if payload.proof_document_url:
         app.proof_document_url = payload.proof_document_url
 

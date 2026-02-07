@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, text
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 from uuid import UUID
 from typing import Optional, Any
 from datetime import datetime
@@ -366,12 +366,16 @@ async def list_pending_applications(
         session=session
     )
 
+# ===================================================================
+# HISTORY (FIXED: Filter by Role to prevent seeing other stages)
+# ===================================================================
 @router.get("/history")
 async def get_my_approval_history(
     current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.Student, *VERIFIER_ROLES)),
     session: AsyncSession = Depends(get_db_session),
     limit: int = Query(50, le=100)
 ):
+    # Base Query
     query = (
         select(
             AuditLog.action,
@@ -389,7 +393,6 @@ async def get_my_approval_history(
         )
         .join(Application, AuditLog.application_id == Application.id)
         .join(Student, Application.student_id == Student.id)
-        .where(AuditLog.actor_id == current_user.id)
         .where(AuditLog.action.in_([
             "STAGE_APPROVED", "STAGE_REJECTED", "ADMIN_OVERRIDE_APPROVE", "ADMIN_OVERRIDE_REJECT"
         ]))
@@ -397,6 +400,61 @@ async def get_my_approval_history(
         .limit(limit)
     )
 
+    # ---------------------------------------------------------
+    # SMART FILTERING: Match Role AND Jurisdiction
+    # ---------------------------------------------------------
+    
+    # 1. ADMIN: Sees Everything
+    if current_user.role == UserRole.Admin:
+        pass 
+
+    # 2. DEAN: Sees actions by DEANS for their School
+    elif current_user.role == UserRole.Dean:
+        if current_user.school_id:
+            query = query.where(
+                or_(
+                    AuditLog.actor_id == current_user.id,  # My personal actions
+                    and_(
+                        Student.school_id == current_user.school_id,
+                        AuditLog.actor_role == "dean" # ✅ ONLY show Dean actions
+                    )
+                )
+            )
+        else:
+            query = query.where(AuditLog.actor_id == current_user.id)
+
+    # 3. HOD: Sees actions by HODS for their Dept
+    elif current_user.role == UserRole.HOD:
+        if current_user.department_id:
+            query = query.where(
+                or_(
+                    AuditLog.actor_id == current_user.id,
+                    and_(
+                        Student.department_id == current_user.department_id,
+                        AuditLog.actor_role == "hod" # ✅ ONLY show HOD actions
+                    )
+                )
+            )
+        else:
+            query = query.where(AuditLog.actor_id == current_user.id)
+
+    # 4. STAFF (School Office): Sees actions by STAFF for their School
+    elif current_user.role == UserRole.Staff and current_user.school_id:
+        query = query.where(
+            or_(
+                AuditLog.actor_id == current_user.id,
+                and_(
+                    Student.school_id == current_user.school_id,
+                    AuditLog.actor_role == "staff" # ✅ ONLY show Staff actions
+                )
+            )
+        )
+
+    # 5. STAFF (Admin Dept) / STUDENT: Strict ID check
+    else:
+        query = query.where(AuditLog.actor_id == current_user.id)
+
+    # --- EXECUTE ---
     result = await session.execute(query)
     rows = result.all()
 
@@ -423,7 +481,7 @@ async def get_my_approval_history(
     return history_data
 
 # ===================================================================
-# ENRICHED DETAILS (FIXED: Fetches Department Name)
+# ENRICHED DETAILS
 # ===================================================================
 @router.get("/enriched/{application_id}")
 async def get_enriched_application_details(
@@ -437,7 +495,7 @@ async def get_enriched_application_details(
     if not app:
         raise HTTPException(404, "Application not found")
 
-    # 2. Corrected SQL (Adds JOIN to departments)
+    # 2. Corrected SQL
     query_text = """
         SELECT 
             a.id AS application_id,
@@ -482,14 +540,12 @@ async def get_enriched_application_details(
     
     params = {"app_id": app.id}
 
-    # Dean Security Check
     if current_user.role == UserRole.Dean:
         if not current_user.school_id:
              raise HTTPException(403, "Dean has no school assigned.")
         query_text += " AND s.school_id = :school_id"
         params["school_id"] = current_user.school_id
     
-    # HOD Security Check
     if current_user.role == UserRole.HOD:
         if not current_user.department_id:
              raise HTTPException(403, "HOD has no department assigned.")
@@ -508,7 +564,7 @@ async def get_enriched_application_details(
 
     response_dict = dict(data)
 
-    # 3. Fetch the Active Stage
+    # 3. Fetch Active Stage
     stage_query = select(ApplicationStage).where(ApplicationStage.application_id == app.id)
     
     if current_user.role == UserRole.Dean:
@@ -550,54 +606,6 @@ async def get_enriched_application_details(
     return response_dict
 
 # ===================================================================
-# GET APPLICATION DETAILS (Basic)
-# ===================================================================
-@router.get("/{application_id}")
-async def get_application_details(
-    app: Application = Depends(get_application_or_404),
-    session: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(AllowRoles(UserRole.Admin, UserRole.Student, *VERIFIER_ROLES)),
-):
-    # Ensure students can only see their own application
-    if current_user.role == UserRole.Student and app.student_id != current_user.student_id:
-        raise HTTPException(status_code=403, detail="Access denied to this application")
-
-    result = await session.execute(
-        select(Application, Student)
-        .join(Student, Application.student_id == Student.id)
-        .where(Application.id == app.id)
-    )
-    row = result.first()
-    
-    if not row:
-        raise HTTPException(404, "Application not found")
-    
-    app_data, student = row
-
-    signed_link = None
-    if app_data.proof_document_url:
-        signed_link = get_signed_url(app_data.proof_document_url)
-
-    return {
-        "application": {
-            "id": app_data.id,
-            "display_id": app_data.display_id,
-            "status": app_data.status,
-            "created_at": app_data.created_at,
-            "updated_at": app_data.updated_at,
-            "remarks": app_data.remarks,
-            "current_stage_order": app_data.current_stage_order,
-            "proof_document_url": signed_link,
-            "student_name": student.full_name,
-            "enrollment_number": student.enrollment_number,
-            "roll_number": student.roll_number,
-            "school_id": student.school_id,
-            "mobile": student.mobile_number,
-            "email": student.email
-        }
-    }
-
-# ===================================================================
 # APPROVE STAGE
 # ===================================================================
 @router.post("/{stage_id}/approve", response_model=StageActionResponse)
@@ -608,18 +616,15 @@ async def approve_stage_endpoint(
     session: AsyncSession = Depends(get_db_session),
 ):
     try:
-        # 1. Validate UUID
         try:
             stage_uuid = UUID(stage_id)
         except ValueError:
             raise HTTPException(400, "Invalid stage ID format (must be UUID)")
 
-        # 2. Fetch Stage
         stage = await session.get(ApplicationStage, stage_uuid)
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        # CHECK: Use UserRole.Admin only
         is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:
@@ -640,7 +645,6 @@ async def approve_stage_endpoint(
         await session.commit()
         await session.refresh(stage)
 
-        # 3. Logging & Emails
         stmt = (
             select(Student, Application)
             .join(Application, Application.student_id == Student.id)
@@ -691,7 +695,7 @@ async def approve_stage_endpoint(
 
 
 # ===================================================================
-# REJECT STAGE
+# REJECT STAGE (FIXED LOGGING CRASH)
 # ===================================================================
 @router.post("/{stage_id}/reject", response_model=StageActionResponse)
 async def reject_stage_endpoint(
@@ -705,18 +709,17 @@ async def reject_stage_endpoint(
         raise HTTPException(400, "Remarks required")
 
     try:
-        # 1. Validate UUID
+        # 1. Validate Stage
         try:
             stage_uuid = UUID(stage_id)
         except ValueError:
             raise HTTPException(400, "Invalid stage ID format (must be UUID)")
 
-        # 2. Fetch Stage
         stage = await session.get(ApplicationStage, stage_uuid)
         if not stage:
             raise HTTPException(404, "Stage not found")
 
-        # CHECK: Use UserRole.Admin only
+        # 2. Perform Rejection (DB Update)
         is_admin = (current_user.role == UserRole.Admin)
 
         if is_admin:
@@ -729,6 +732,7 @@ async def reject_stage_endpoint(
             stage.comments = f"Admin Rejected: {data.remarks}"
             session.add(stage)
             
+            # Cascade reject the application
             app_to_reject = await session.get(Application, stage.application_id)
             app_to_reject.status = ApplicationStatus.REJECTED
             app_to_reject.remarks = f"Rejected by Admin at Stage {stage.sequence_order}: {data.remarks}"
@@ -737,30 +741,62 @@ async def reject_stage_endpoint(
         else:
             stage = await reject_stage(session, str(stage_uuid), current_user.id, data.remarks)
 
-        await session.commit()
+        await session.commit() # <--- DATA SAVED HERE
         await session.refresh(stage)
 
-        student, entity_name = await get_email_context(session, str(stage.application_id), stage)
+        # -----------------------------------------------------------------
+        # 3. ROBUST FETCH (Replaces get_email_context to prevent crashes)
+        # -----------------------------------------------------------------
+        try:
+            stmt = (
+                select(Student, Application)
+                .join(Application, Application.student_id == Student.id)
+                .where(Application.id == stage.application_id)
+            )
+            res = await session.execute(stmt)
+            row = res.first()
+            
+            if row:
+                student, application = row
+                
+                # --- LOGGING ---
+                background_tasks.add_task(
+                    log_activity,
+                    action="STAGE_REJECTED" if not is_admin else "ADMIN_OVERRIDE_REJECT",
+                    actor_id=current_user.id,
+                    actor_role=current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
+                    actor_name=current_user.name,
+                    application_id=stage.application_id,
+                    remarks=data.remarks,
+                    details={
+                        "stage_id": str(stage.id), 
+                        "student_roll": student.roll_number,
+                        "display_id": application.display_id
+                    }
+                )
 
-        background_tasks.add_task(
-            log_activity,
-            action="STAGE_REJECTED" if not is_admin else "ADMIN_OVERRIDE_REJECT",
-            actor_id=current_user.id,
-            actor_role=current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
-            actor_name=current_user.name,
-            application_id=stage.application_id,
-            remarks=data.remarks,
-            details={"stage_id": str(stage.id), "student_roll": student.roll_number if student else "Unknown"}
-        )
+                # --- EMAIL ---
+                # Determine sender name safely
+                sender_name = "Department"
+                if stage.department_id:
+                    # Try to fetch department name, fallback gracefully if missing
+                    dept_res = await session.execute(select(Department.name).where(Department.id == stage.department_id))
+                    sender_name = dept_res.scalar_one_or_none() or "Department"
+                elif stage.verifier_role:
+                    sender_name = stage.verifier_role.capitalize()
 
-        if student:
-            email_payload = {
-                "name": student.full_name,
-                "email": student.email,
-                "department_name": entity_name or "Department",
-                "remarks": data.remarks
-            }
-            background_tasks.add_task(send_application_rejected_email, email_payload)
+                email_payload = {
+                    "name": student.full_name,
+                    "email": student.email,
+                    "department_name": sender_name,
+                    "remarks": data.remarks
+                }
+                background_tasks.add_task(send_application_rejected_email, email_payload)
+                
+        except Exception as e:
+            # CRITICAL: Catch errors here so the API response doesn't crash 
+            # (since DB is already updated)
+            print(f"⚠️ Post-Rejection Error (Logs/Email failed): {str(e)}")
 
         return stage
 
@@ -776,10 +812,8 @@ async def admin_override_stage_action(
     payload: AdminOverrideRequest,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    # Require 'admin' role directly
     current_user: User = Depends(AllowRoles(UserRole.Admin)), 
 ):
-    # 1. Fetch Stage
     stage = await session.get(ApplicationStage, payload.stage_id)
     if not stage:
         raise HTTPException(404, "Stage not found")
@@ -810,7 +844,6 @@ async def admin_override_stage_action(
         
         session.add(stage)
         
-        # Handle "Dead" Application Revival
         if application_read_only.status == ApplicationStatus.REJECTED:
              app_to_revive = await session.get(Application, app_id)
              app_to_revive.status = ApplicationStatus.PENDING
@@ -818,13 +851,9 @@ async def admin_override_stage_action(
              session.add(app_to_revive)
 
         await session.flush() 
-
-        # Run Waterfall Updater
         await _update_application_status(session, app_id, trigger_user_id=current_user.id)
-        
         await session.commit() 
         
-        # Re-fetch for Email/Certificate logic
         final_app = await session.get(Application, app_id)
         
         if final_app.status == ApplicationStatus.COMPLETED:

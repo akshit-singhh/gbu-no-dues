@@ -4,13 +4,12 @@ import os
 import io
 import uuid
 import base64
-import shutil  # <--- ADDED: To find the executable path dynamically
-import pdfkit
 import qrcode
 from datetime import datetime
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from jinja2 import Environment, FileSystemLoader
+from xhtml2pdf import pisa  # <--- REPLACES pdfkit
 
 from app.core.config import settings
 from app.models.application import Application
@@ -39,41 +38,6 @@ template_env = Environment(
 )
 
 # -----------------------------
-# WKHTMLTOPDF CONFIG (FIXED)
-# -----------------------------
-# 1. Try to find wkhtmltopdf on the system PATH (works for Docker/Linux)
-path_wkhtmltopdf = shutil.which("wkhtmltopdf")
-
-# 2. Fallback for Windows local development if not in PATH
-if path_wkhtmltopdf is None and os.name == "nt":
-    possible_path = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
-    if os.path.exists(possible_path):
-        path_wkhtmltopdf = possible_path
-
-# 3. Configure pdfkit
-if path_wkhtmltopdf:
-    config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
-else:
-    # If not found, let pdfkit try its default detection mechanism
-    # (This avoids the immediate crash if the path isn't explicitly set)
-    config = pdfkit.configuration()
-
-options = {
-    "page-size": "A4",
-    "margin-top": "15mm",
-    "margin-right": "15mm",
-    "margin-bottom": "15mm",
-    "margin-left": "15mm",
-    "encoding": "UTF-8",
-    "dpi": 300,
-    "zoom": 1,
-    "disable-smart-shrinking": None,
-    "print-media-type": None,
-    "enable-local-file-access": None,
-    "no-outline": None
-}
-
-# -----------------------------
 # HELPER: Encode Image to Base64
 # -----------------------------
 def image_to_base64(path: str) -> str:
@@ -94,8 +58,8 @@ async def generate_certificate_pdf(
     generated_by_id: uuid.UUID | None = None
 ) -> bytes:
     """
-    Generates a PDF certificate using wkhtmltopdf with embedded logo and QR.
-    No local QR or logo files are required.
+    Generates a PDF certificate using xhtml2pdf (Pure Python).
+    Works on Vercel/AWS Lambda without external binaries.
     """
 
     # -----------------------------
@@ -170,6 +134,22 @@ async def generate_certificate_pdf(
     logo_base64 = image_to_base64(logo_path)
 
     # -----------------------------
+    # CSS CONFIG FOR PDF
+    # -----------------------------
+    # xhtml2pdf handles margins via @page CSS. We inject this into the context.
+    page_style = """
+    <style>
+        @page {
+            size: A4;
+            margin: 15mm;
+        }
+        body {
+            font-family: Helvetica, sans-serif;
+        }
+    </style>
+    """
+
+    # -----------------------------
     # TEMPLATE CONTEXT
     # -----------------------------
     context = {
@@ -179,28 +159,46 @@ async def generate_certificate_pdf(
         "generation_date": datetime.now().strftime("%d-%m-%Y"),
         "certificate_url": certificate_url,
         "qr_base64": qr_base64,
-        "logo_base64": logo_base64
+        "logo_base64": logo_base64,
+        "page_style": page_style # Inject CSS
     }
 
     # -----------------------------
     # RENDER HTML
     # -----------------------------
-    html = template_env.get_template("pdf/certificate_template.html").render(context)
+    html_content = template_env.get_template("pdf/certificate_template.html").render(context)
 
     # -----------------------------
-    # GENERATE PDF
+    # GENERATE PDF (Pure Python)
     # -----------------------------
-    pdf_bytes = pdfkit.from_string(html, False, configuration=config, options=options)
+    pdf_buffer = io.BytesIO()
+    
+    # pisa.CreatePDF parses the HTML and writes directly to the buffer
+    pisa_status = pisa.CreatePDF(
+        src=html_content,
+        dest=pdf_buffer,
+        encoding='utf-8'
+    )
+
+    if pisa_status.err:
+        raise RuntimeError(f"PDF generation failed: {pisa_status.err}")
+
+    pdf_bytes = pdf_buffer.getvalue()
 
     # -----------------------------
-    # SAVE PDF (OPTIONAL)
+    # SAVE PDF (OPTIONAL / LOCAL CACHE)
     # -----------------------------
-    pdf_name = f"certificate_{application.id}.pdf"
-    pdf_path = os.path.join(CERT_DIR, pdf_name)
-    with open(pdf_path, "wb") as f:
-        f.write(pdf_bytes)
-
-    pdf_url = f"/static/certificates/{pdf_name}"
+    # Only save to disk if we have write permissions (might fail on Vercel read-only FS, so wrap in try)
+    try:
+        pdf_name = f"certificate_{application.id}.pdf"
+        pdf_path = os.path.join(CERT_DIR, pdf_name)
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+        pdf_url = f"/static/certificates/{pdf_name}"
+    except Exception:
+        # On Vercel, we can't write to local disk usually, but that's fine 
+        # as we return bytes for download anyway.
+        pdf_url = ""
 
     # -----------------------------
     # SAVE DB RECORD

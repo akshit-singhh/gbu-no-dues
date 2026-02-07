@@ -38,25 +38,18 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 # ===================================================================
-# 1. CERTIFICATE VERIFICATION
+# 1. CERTIFICATE VERIFICATION (JSON API)
 # ===================================================================
-@router.get("/verify/{certificate_id}", response_class=HTMLResponse)
+@router.get("/verify/{certificate_id}")
 async def verify_certificate(
-    request: Request,
     certificate_id: str,
     session: AsyncSession = Depends(get_db_session)
 ):
     # Clean the input
     clean_id = certificate_id.strip()
-    
-    def render_fail(msg):
-        return templates.TemplateResponse("verification.html", {
-            "request": request,
-            "valid": False,
-            "message": msg
-        })
 
     # STEP 1: Find Certificate
+    # We allow searching by either UUID (System ID) or Certificate Number (GBU-ND-...)
     query = select(Certificate)
     try:
         cert_uuid = UUID(clean_id)
@@ -68,7 +61,8 @@ async def verify_certificate(
     certificate = result.scalar_one_or_none()
 
     if not certificate:
-        return render_fail(f"Certificate record not found for ID: {clean_id}")
+        # Return 404 so frontend knows it's invalid
+        raise HTTPException(status_code=404, detail=f"Invalid Certificate ID: {clean_id}")
 
     # STEP 2: Find Application
     app_res = await session.execute(
@@ -77,7 +71,7 @@ async def verify_certificate(
     application = app_res.scalar_one_or_none()
 
     if not application:
-        return render_fail("Certificate exists, but linked Application is missing.")
+        raise HTTPException(status_code=404, detail="Certificate exists, but linked Application is missing.")
 
     # STEP 3: Find Student
     student_res = await session.execute(
@@ -86,17 +80,22 @@ async def verify_certificate(
     student = student_res.scalar_one_or_none()
 
     if not student:
-        return render_fail("Application exists, but linked Student data is missing.")
+        raise HTTPException(status_code=404, detail="Application exists, but linked Student data is missing.")
 
-    # STEP 4: Success
-    return templates.TemplateResponse("verification.html", {
-        "request": request,
+    # STEP 4: Return JSON Data for Frontend
+    return {
         "valid": True,
-        "student": student,
-        "application": application, 
-        "certificate": certificate,
-        "generation_date": certificate.generated_at.strftime("%d %B, %Y")
-    })
+        "message": "Verified Successfully",
+        "data": {
+            "certificate_number": certificate.certificate_number,
+            "application_ref": application.display_id,
+            "student_name": student.full_name,
+            "enrollment_number": student.enrollment_number,
+            "roll_number": student.roll_number,
+            "issued_on": certificate.generated_at.strftime("%d %B, %Y"), # Formatted for UI
+            "issued_at_iso": certificate.generated_at # ISO format for logic
+        }
+    }
 
 
 # ===================================================================

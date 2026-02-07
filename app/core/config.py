@@ -51,14 +51,17 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     # FRONTEND / CORS CONFIGURATION
     # ------------------------------------------------------------
-    # 1. For Email Links (Single Base URL)
+    # 1. For Email Links (Single Base URL for clicking)
+    #    Defaults to localhost, but .env should override this in prod
     FRONTEND_URL: str = "http://localhost:5173"
 
     # 2. For CORS Middleware (Comma-separated list)
+    #    The .env file will provide: "https://nodues-swxb.vercel.app,http://localhost:5173"
     FRONTEND_URLS: str = "http://localhost:5173"
 
-    # Regex for dynamic deployments (Vercel previews, DevTunnels, etc.)
-    FRONTEND_REGEX: Optional[str] = ""
+    # 3. Regex for dynamic deployments (Vercel previews, DevTunnels, etc.)
+    #    The .env file will provide the regex string.
+    FRONTEND_REGEX: Optional[str] = None
 
     # ------------------------------------------------------------
     # EXTERNAL SERVICES (SUPABASE / CLOUD)
