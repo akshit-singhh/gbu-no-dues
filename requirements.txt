@@ -81,7 +81,6 @@ websockets==15.0.1
 win32_setctime==1.2.0
 wrapt==2.0.1
 yarl==1.22.0
-WeasyPrint==59.0
 fpdf2==2.7.1
 Pillow==10.4.0
 xhtml2pdf==0.2.8
