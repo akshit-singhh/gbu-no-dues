@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    ENV: str = "dev"  # "dev" or "prod"
+    ENV: str = "prod"  # "dev" or "prod"
 
     @computed_field
     @property
