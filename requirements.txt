@@ -6,7 +6,7 @@ SQLAlchemy==2.0.44
 asyncpg==0.30.0
 pydantic==2.12.4
 pydantic-settings==2.12.0
-email-validator==2.2.0
+email-validator==2.3.0
 python-multipart==0.0.5
 python-dotenv==1.2.1
 loguru==0.7.3
@@ -14,8 +14,11 @@ jinja2==3.1.6
 slowapi==0.1.9
 starlette==0.49.3
 
-# --- PDF Generation (Vercel-Safe Pure Python Stack) ---
-# reportlab 4.0.9 is the highest version compatible with xhtml2pdf 0.2.x
+# --- Captcha Service ---
+captcha==0.5.0
+
+# --- PDF Generation (COMPATIBILITY SOLVED) ---
+# Forced to 4.0.9 to satisfy xhtml2pdf dependency logic
 reportlab==4.0.9
 xhtml2pdf==0.2.15
 fpdf2==2.7.1
@@ -44,7 +47,7 @@ ecdsa==0.19.1
 rsa==4.9.1
 pyasn1==0.6.1
 
-# --- Utilities & Dependencies ---
+# --- Dependencies & Utilities ---
 httpx==0.28.1
 httpcore==1.0.9
 h11==0.16.0
