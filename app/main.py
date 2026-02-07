@@ -1,5 +1,3 @@
-# app/main.py
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -8,7 +6,6 @@ from contextlib import asynccontextmanager
 from loguru import logger
 import sys
 import time
-import psutil
 import uuid
 import os
 import socket
@@ -70,7 +67,6 @@ START_TIME = time.time()
 async def seed_static_data():
     """Automatically populates Schools and Departments if they are missing."""
     async with AsyncSessionLocal() as session:
-        # 1. SEED SCHOOLS
         schools_data = [
             {"name": "School of Information & Communication Technology", "code": "SOICT"},
             {"name": "School of Engineering", "code": "SOE"},
@@ -89,9 +85,7 @@ async def seed_static_data():
                 logger.info(f"🌱 Seeding School: {s['name']}")
                 session.add(School(name=s["name"], code=s["code"]))
 
-        # 2. SEED DEPARTMENTS
         depts_data = [
-            # Phase 1: Academic (HOD Approval)
             {"name": "Computer Science & Engineering", "code": "CSE", "phase_number": 1},
             {"name": "Information Technology", "code": "IT", "phase_number": 1},
             {"name": "Electronics & Communication", "code": "ECE", "phase_number": 1},
@@ -105,15 +99,11 @@ async def seed_static_data():
             {"name": "Architecture & Planning", "code": "AP", "phase_number": 1},
             {"name": "Applied Mathematics", "code": "MATH", "phase_number": 1},
             {"name": "Applied Physics", "code": "PHY", "phase_number": 1},
-
-            # Phase 2: Administrative (Parallel Approval)
             {"name": "University Library", "code": "LIB", "phase_number": 2},
             {"name": "Hostel Administration", "code": "HST", "phase_number": 2},
             {"name": "Sports Department", "code": "SPT", "phase_number": 2},
             {"name": "Laboratories", "code": "LAB", "phase_number": 2},
             {"name": "Corporate Relations Cell", "code": "CRC", "phase_number": 2},
-
-            # Phase 3: Accounts (Final Clearance)
             {"name": "Finance & Accounts", "code": "ACC", "phase_number": 3},
         ]
 
@@ -137,30 +127,20 @@ async def seed_static_data():
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting GBU No Dues Backend...")
 
-    # 1. Database Check & Table Creation
     try:
         await test_connection()
         logger.success("Database connection established.")
+        # Note: In Serverless, consider running init_db() via a separate script to save cold-start time
         await init_db()
-        logger.success("Database tables ready.")
-    except Exception:
-        logger.exception("❌ Startup failed: Database unavailable.")
-        raise
-
-    # 2. Auto-Seed Schools & Departments (The Fix)
-    try:
+        
+        # Seed Data
         await seed_static_data()
-        logger.success("Static data (Schools/Depts) verified.")
-    except Exception:
-        logger.exception("⚠️ Static data seeding failed.")
-
-    # 3. Seed System Admin
-    try:
+        
+        # Seed Admin
         async with AsyncSessionLocal() as session:
             if settings.ADMIN_EMAIL and settings.ADMIN_PASSWORD:
                 existing = await get_user_by_email(session, settings.ADMIN_EMAIL)
                 if not existing:
-                    logger.info(f"Seeding Admin account ({settings.ADMIN_EMAIL})...")
                     await create_user(
                         session=session,
                         name=settings.ADMIN_NAME or "System Admin",
@@ -168,15 +148,10 @@ async def lifespan(app: FastAPI):
                         password=settings.ADMIN_PASSWORD,
                         role=UserRole.Admin, 
                     )
-                    logger.success("System Admin created successfully.")
-                else:
-                    logger.info("System Admin already exists.")
-            else:
-                logger.warning("Admin credentials missing in .env (ADMIN_EMAIL/PASSWORD).")
-    except Exception:
-        logger.exception("System Admin seeding failed.")
+                    logger.success("System Admin created.")
+    except Exception as e:
+        logger.error(f"⚠️ Startup sequence partial failure: {e}")
 
-    logger.success("✅ Backend startup completed.")
     yield
     logger.warning("🛑 Backend shutting down...")
 
@@ -190,118 +165,78 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ------------------------------------------------------------
-# RATE LIMITER CONFIGURATION
-# ------------------------------------------------------------
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ------------------------------------------------------------
-# REQUEST ID MIDDLEWARE
+# MIDDLEWARE
 # ------------------------------------------------------------
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
-    logger.bind(request_id=request_id).info(
-        f"{request.method} {request.url.path}"
-    )
+    logger.bind(request_id=request_id).info(f"{request.method} {request.url.path}")
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
 
-# ------------------------------------------------------------
-# GLOBAL EXCEPTION HANDLER
-# ------------------------------------------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception(f"Unhandled error on {request.url.path}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal Server Error"},
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 # ------------------------------------------------------------
-# STATIC FILES & FAVICON
+# STATIC FILES (Vercel Friendly)
 # ------------------------------------------------------------
-os.makedirs("app/static", exist_ok=True)
-os.makedirs("app/static/certificates", exist_ok=True)
+# We wrap path creation in try/except because Vercel is Read-Only
+try:
+    if not os.path.exists("app/static/certificates"):
+        os.makedirs("app/static/certificates", exist_ok=True)
+except Exception:
+    pass
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    if os.path.exists("app/static/favicon.ico"):
-        return FileResponse("app/static/favicon.ico")
-    return JSONResponse({"detail": "No favicon"}, status_code=404)
-
-@app.get("/status", include_in_schema=False)
-async def status_page():
-    if os.path.exists("app/static/status.html"):
-        return FileResponse("app/static/status.html")
-    return JSONResponse({"status": "running"}, status_code=200)
+if os.path.exists("app/static"):
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 # ------------------------------------------------------------
-# METRICS API
+# METRICS API (REMOVED PSUTIL TO FIX 500 ERROR)
 # ------------------------------------------------------------
 @app.get("/api/metrics", tags=["System"])
 async def metrics():
     uptime_seconds = int(time.time() - START_TIME)
-    cpu_usage = psutil.cpu_percent(interval=None)
-    ram_usage = psutil.virtual_memory().percent
-
-    try:
-        disk_usage = psutil.disk_usage("/").percent
-    except Exception:
-        disk_usage = 0
-
-    # 1. Database Check
-    db_latency = 0
+    
     db_status = "Disconnected"
     try:
-        start = time.time()
         await test_connection()
-        db_latency = round((time.time() - start) * 1000, 2)
         db_status = "Connected"
     except Exception:
         db_status = "Error"
 
-    # 2. SMTP Server Check
-    smtp_status = "Disconnected"
-    try:
-        if settings.SMTP_HOST:
-            # Try to connect to the SMTP port (timeout 2s)
+    smtp_status = "Not Configured"
+    if settings.SMTP_HOST:
+        try:
             sock = socket.create_connection((settings.SMTP_HOST, settings.SMTP_PORT), timeout=2)
             sock.close()
             smtp_status = "Connected"
-        else:
-            smtp_status = "Not Configured"
-    except Exception:
-        smtp_status = "Error"
+        except Exception:
+            smtp_status = "Error"
 
     return {
         "status": "Online",
         "version": app.version,
         "uptime": uptime_seconds,
-        "cpu": cpu_usage,
-        "ram": ram_usage,
-        "disk": disk_usage,
         "database": db_status,
-        "db_latency_ms": db_latency,
         "smtp_server": smtp_status,
-        "db_pool": "Managed by Supabase PgBouncer",
+        "environment": "Serverless (Vercel)" if os.environ.get("VERCEL") else "Development"
     }
 
 # ------------------------------------------------------------
-# CORS CONFIGURATION
+# CORS
 # ------------------------------------------------------------
-# Handle cases where config might be empty strings
 frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")] if settings.FRONTEND_URLS else ["*"]
-frontend_regex = settings.FRONTEND_REGEX or None
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins,
-    allow_origin_regex=frontend_regex,
+    allow_origin_regex=settings.FRONTEND_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -322,15 +257,11 @@ app.include_router(captcha_router.router)
 app.include_router(utils_router.router)
 app.include_router(jobs_router.router)
 
-# ------------------------------------------------------------
-# ROOT HEALTH CHECK
-# ------------------------------------------------------------
 @app.get("/", tags=["System"])
 async def root():
-    return {
-        "status": "ok",
-        "service": "GBU No Dues Backend",
-        "version": app.version,
-        "message": "Backend running successfully 🚀",
-        "dashboard_url": "/status",
-    }
+    return {"status": "ok", "message": "Backend running successfully 🚀"}
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    fav_path = "app/static/favicon.ico"
+    return FileResponse(fav_path) if os.path.exists(fav_path) else JSONResponse({"detail": "No favicon"}, status_code=404)
