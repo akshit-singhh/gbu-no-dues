@@ -1,5 +1,3 @@
-# app/services/pdf_service.py
-
 import os
 import io
 import uuid
@@ -9,7 +7,14 @@ from datetime import datetime
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from jinja2 import Environment, FileSystemLoader
-from xhtml2pdf import pisa  # <--- REPLACES pdfkit
+
+# --- FIX FOR VERCEL IMPORT ERROR ---
+import reportlab.platypus.frames
+if not hasattr(reportlab.platypus.frames, 'ShowBoundaryValue'):
+    setattr(reportlab.platypus.frames, 'ShowBoundaryValue', 0)
+# -----------------------------------
+
+from xhtml2pdf import pisa 
 
 from app.core.config import settings
 from app.models.application import Application
@@ -27,7 +32,11 @@ TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 CERT_DIR = os.path.join(STATIC_DIR, "certificates")
 
-os.makedirs(CERT_DIR, exist_ok=True)
+# Wrap in try-except for Vercel's read-only filesystem
+try:
+    os.makedirs(CERT_DIR, exist_ok=True)
+except Exception:
+    pass
 
 # -----------------------------
 # JINJA2 SETUP
@@ -41,10 +50,8 @@ template_env = Environment(
 # HELPER: Encode Image to Base64
 # -----------------------------
 def image_to_base64(path: str) -> str:
-    # Check if file exists to prevent FileNotFoundError crashing the server
     if not os.path.exists(path):
         return ""
-        
     with open(path, "rb") as f:
         encoded = base64.b64encode(f.read()).decode()
     return encoded
@@ -62,9 +69,7 @@ async def generate_certificate_pdf(
     Works on Vercel/AWS Lambda without external binaries.
     """
 
-    # -----------------------------
     # FETCH APPLICATION & STUDENT
-    # -----------------------------
     application = (
         await session.execute(
             select(Application).where(Application.id == application_id)
@@ -77,9 +82,7 @@ async def generate_certificate_pdf(
         )
     ).scalar_one()
 
-    # -----------------------------
     # FETCH STAGES
-    # -----------------------------
     stages_query = (
         select(ApplicationStage, Department.name, User.name)
         .outerjoin(Department, ApplicationStage.department_id == Department.id)
@@ -99,9 +102,7 @@ async def generate_certificate_pdf(
             "reviewed_at": stage.verified_at.strftime("%d-%m-%Y") if stage.verified_at else "-"
         })
 
-    # -----------------------------
     # CERTIFICATE ID
-    # -----------------------------
     cert = (
         await session.execute(
             select(Certificate).where(Certificate.application_id == application.id)
@@ -114,9 +115,7 @@ async def generate_certificate_pdf(
         suffix = uuid.uuid4().hex[:5].upper()
         readable_id = f"GBU-ND-{datetime.now().year}-{suffix}"
 
-    # -----------------------------
     # QR CODE (IN-MEMORY)
-    # -----------------------------
     certificate_url = f"{settings.FRONTEND_URL}/verify/{readable_id}"
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(certificate_url)
@@ -127,16 +126,11 @@ async def generate_certificate_pdf(
     qr_image.save(qr_buffer, format="PNG")
     qr_base64 = base64.b64encode(qr_buffer.getvalue()).decode()
 
-    # -----------------------------
     # LOGO (IN-MEMORY)
-    # -----------------------------
     logo_path = os.path.join(STATIC_DIR, "images", "gbu_logo.png")
     logo_base64 = image_to_base64(logo_path)
 
-    # -----------------------------
     # CSS CONFIG FOR PDF
-    # -----------------------------
-    # xhtml2pdf handles margins via @page CSS. We inject this into the context.
     page_style = """
     <style>
         @page {
@@ -149,9 +143,7 @@ async def generate_certificate_pdf(
     </style>
     """
 
-    # -----------------------------
     # TEMPLATE CONTEXT
-    # -----------------------------
     context = {
         "student": student,
         "stages": formatted_stages,
@@ -160,20 +152,14 @@ async def generate_certificate_pdf(
         "certificate_url": certificate_url,
         "qr_base64": qr_base64,
         "logo_base64": logo_base64,
-        "page_style": page_style # Inject CSS
+        "page_style": page_style
     }
 
-    # -----------------------------
     # RENDER HTML
-    # -----------------------------
     html_content = template_env.get_template("pdf/certificate_template.html").render(context)
 
-    # -----------------------------
-    # GENERATE PDF (Pure Python)
-    # -----------------------------
+    # GENERATE PDF
     pdf_buffer = io.BytesIO()
-    
-    # pisa.CreatePDF parses the HTML and writes directly to the buffer
     pisa_status = pisa.CreatePDF(
         src=html_content,
         dest=pdf_buffer,
@@ -185,36 +171,16 @@ async def generate_certificate_pdf(
 
     pdf_bytes = pdf_buffer.getvalue()
 
-    # -----------------------------
-    # SAVE PDF (OPTIONAL / LOCAL CACHE)
-    # -----------------------------
-    # Only save to disk if we have write permissions (might fail on Vercel read-only FS, so wrap in try)
-    try:
-        pdf_name = f"certificate_{application.id}.pdf"
-        pdf_path = os.path.join(CERT_DIR, pdf_name)
-        with open(pdf_path, "wb") as f:
-            f.write(pdf_bytes)
-        pdf_url = f"/static/certificates/{pdf_name}"
-    except Exception:
-        # On Vercel, we can't write to local disk usually, but that's fine 
-        # as we return bytes for download anyway.
-        pdf_url = ""
-
-    # -----------------------------
     # SAVE DB RECORD
-    # -----------------------------
     if cert:
-        cert.pdf_url = pdf_url
         cert.generated_at = datetime.utcnow()
-        cert.certificate_number = readable_id
-        cert.generated_by = generated_by_id
         session.add(cert)
     else:
         session.add(Certificate(
             id=uuid.uuid4(),
             application_id=application.id,
             certificate_number=readable_id,
-            pdf_url=pdf_url,
+            pdf_url="",
             generated_at=datetime.utcnow(),
             generated_by=generated_by_id
         ))
