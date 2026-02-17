@@ -1,5 +1,3 @@
-# app/api/endpoints/auth.py
-
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text
@@ -11,11 +9,10 @@ from sqlalchemy.orm import selectinload
 import time 
 import csv 
 import io
-import hashlib
 from app.core.config import settings
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash 
-from app.models.department import Department
+
 # Schemas
 from app.schemas.auth import (
     LoginRequest, 
@@ -27,6 +24,11 @@ from app.schemas.auth import (
 from app.schemas.user import UserRead, UserUpdate, UserListResponse
 from app.schemas.student import StudentRead
 from app.schemas.audit import AuditLogRead
+# ✅ NEW: Import Academic Schemas
+from app.schemas.academic import (
+    ProgrammeCreate, ProgrammeRead,
+    SpecializationCreate, SpecializationRead
+)
 
 from app.core.storage import get_signed_url
 
@@ -34,6 +36,8 @@ from app.core.storage import get_signed_url
 from app.models.user import UserRole, User
 from app.models.school import School          
 from app.models.department import Department  
+# ✅ NEW: Import Academic Models
+from app.models.academic import Programme, Specialization
 from app.models.audit import AuditLog
 from app.models.application import Application 
 from app.models.application_stage import ApplicationStage 
@@ -51,6 +55,7 @@ from app.services.auth_service import (
     update_user
 )
 from app.services.student_service import list_students
+from app.services.turnstile import verify_turnstile
 
 from app.api.deps import get_db_session, get_current_user, require_admin
 
@@ -58,7 +63,7 @@ router = APIRouter(prefix="/api/admin", tags=["Auth (Admin)"])
 
 
 # ----------------------------------------------------------------
-# LOGIN (Protected with Rate Limit)
+# LOGIN (Protected with Rate Limit + Turnstile)
 # ----------------------------------------------------------------
 @router.post("/login", response_model=TokenWithUser)
 @limiter.limit("10/minute") 
@@ -67,19 +72,26 @@ async def login(
     payload: LoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
-    if not payload.captcha_hash:
-        raise HTTPException(status_code=400, detail="CAPTCHA hash missing.")
+    # 1. Verify Turnstile Token
+    client_ip = request.client.host if request.client else None
     
-    # Helper to verify captcha (ensure this function is defined or imported)
-    def verify_captcha_hash(user_input: str, cookie_hash: str) -> bool:
-        if not user_input or not cookie_hash: return False
-        normalized = user_input.strip().upper()
-        raw_str = f"{normalized}{settings.SECRET_KEY}"
-        return hashlib.sha256(raw_str.encode()).hexdigest() == cookie_hash
+    # Check if token exists
+    if not payload.turnstile_token:
+        raise HTTPException(
+            status_code=400, 
+            detail="Security check missing."
+        )
 
-    if not verify_captcha_hash(payload.captcha_input, payload.captcha_hash):
-        raise HTTPException(status_code=400, detail="Invalid CAPTCHA code.")
+    # Validate with Cloudflare
+    is_human = await verify_turnstile(payload.turnstile_token, ip=client_ip)
+    
+    if not is_human:
+        raise HTTPException(
+            status_code=400, 
+            detail="Security check failed. Please refresh the page and try again."
+        )
 
+    # 2. Authenticate User
     user = await authenticate_user(session, payload.email, payload.password)
 
     if not user:
@@ -89,7 +101,7 @@ async def login(
 
 
 # ===================================================================
-# REGISTER USER (The Main Creation Endpoint)
+# REGISTER USER (Robust Code-First Version)
 # ===================================================================
 @router.post("/register-user", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def register_user(
@@ -99,7 +111,7 @@ async def register_user(
 ):
     """
     Creates a new user (Admin, Dean, HOD, Staff).
-    Accepts 'school_code' or 'department_code' for robust ID resolution.
+    Prioritizes 'school_code' or 'department_code' for ID resolution.
     """
     # 1. Check Email Duplication
     existing = await get_user_by_email(session, data.email)
@@ -107,45 +119,47 @@ async def register_user(
         raise HTTPException(400, detail="Email already exists")
 
     if data.role == UserRole.Admin:
-         # Optional: Redirect to specialized endpoint or allow here with checks
+         # Admins don't need school/dept links generally
          pass 
 
     # 2. RESOLVE CODES TO IDs
-    final_school_id = data.school_id # Fallback
-    final_dept_id = data.department_id # Fallback
+    final_school_id = data.school_id 
+    final_dept_id = data.department_id 
 
-    # Resolve School Code (e.g., 'SOE')
+    # Resolve School Code (e.g., 'SOICT', 'SOE')
     if data.school_code:
-        res = await session.execute(select(School).where(School.code == data.school_code.upper()))
+        clean_code = data.school_code.strip().upper()
+        res = await session.execute(select(School).where(School.code == clean_code))
         school = res.scalar_one_or_none()
         if not school:
-            raise HTTPException(400, f"Invalid School Code: {data.school_code}")
+            raise HTTPException(400, f"Invalid School Code: {clean_code}")
         final_school_id = school.id
 
-    # Resolve Department Code (e.g., 'CSE', 'LIB')
+    # Resolve Department Code (e.g., 'CSE', 'LIB', 'ACC')
     if data.department_code:
-        res = await session.execute(select(Department).where(Department.code == data.department_code.upper()))
+        clean_code = data.department_code.strip().upper()
+        res = await session.execute(select(Department).where(Department.code == clean_code))
         dept = res.scalar_one_or_none()
         if not dept:
-            raise HTTPException(400, f"Invalid Department Code: {data.department_code}")
+            raise HTTPException(400, f"Invalid Department Code: {clean_code}")
         final_dept_id = dept.id
 
-    # 3. VALIDATE ROLE RULES
+    # 3. VALIDATE ROLE RULES (Enforce Hierarchy)
     if data.role == UserRole.Dean:
         if not final_school_id:
             raise HTTPException(400, "Dean requires a valid 'school_code'.")
-        final_dept_id = None 
+        final_dept_id = None  # Deans shouldn't be linked to specific academic depts
 
     elif data.role == UserRole.HOD:
         if not final_dept_id:
             raise HTTPException(400, "HOD requires a valid 'department_code'.")
-        final_school_id = None 
 
     elif data.role == UserRole.Staff:
         if not final_school_id and not final_dept_id:
-            raise HTTPException(400, "Staff must have either 'school_code' or 'department_code'.")
+            raise HTTPException(400, "Staff must have either 'school_code' (for Office) or 'department_code' (for Admin Depts).")
+        
         if final_school_id and final_dept_id:
-             raise HTTPException(400, "Staff cannot belong to both School and Department.")
+             raise HTTPException(400, "Staff cannot operate at both School and Department levels simultaneously. Create separate accounts if needed.")
 
     # 4. CALL SERVICE
     new_user = await create_user(
@@ -176,7 +190,11 @@ async def create_school(
     if res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="School with this name or code already exists")
 
-    new_school = School(name=payload.name, code=payload.code.upper())
+    new_school = School(
+        name=payload.name, 
+        code=payload.code.upper(),
+        requires_lab_clearance=payload.requires_lab_clearance
+    )
     session.add(new_school)
     await session.commit()
     await session.refresh(new_school)
@@ -190,21 +208,41 @@ async def list_schools(
     result = await session.execute(select(School).order_by(School.name))
     return result.scalars().all()
 
-@router.delete("/schools/{school_id}", status_code=204)
+@router.delete("/schools/{identifier}", status_code=204)
 async def delete_school(
-    school_id: int,
+    identifier: str, 
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin), 
 ):
-    school = await session.get(School, school_id)
+    if identifier.isdigit():
+        stmt = select(School).where(School.id == int(identifier))
+    else:
+        stmt = select(School).where(School.code == identifier.upper())
+        
+    result = await session.execute(stmt)
+    school = result.scalar_one_or_none()
+
     if not school:
-        raise HTTPException(404, detail="School not found")
+        raise HTTPException(status_code=404, detail="School not found")
+
+    dept_check = await session.execute(
+        select(Department).where(Department.school_id == school.id).limit(1)
+    )
+    if dept_check.scalar():
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete {school.code}. You must first reassign or delete the departments belonging to this school."
+        )
+
     try:
         await session.delete(school)
         await session.commit()
-    except Exception:
+    except Exception as e:
         await session.rollback()
-        raise HTTPException(400, detail="Cannot delete school. It has linked records.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Deletion blocked: This school has active students or staff linked to it."
+        )
     return None
 
 
@@ -223,39 +261,225 @@ async def create_department(
     if res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Department with this name or code already exists")
 
+    final_school_id = None
+    if payload.school_code:
+        stmt = select(School).where(School.code == payload.school_code.strip().upper())
+        school_res = await session.execute(stmt)
+        school = school_res.scalar_one_or_none()
+        if not school:
+            raise HTTPException(status_code=400, detail=f"Invalid School Code: {payload.school_code}")
+        final_school_id = school.id
+
+    if payload.phase_number == 1 and not final_school_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Academic Departments (Phase 1) must be linked to a School. Please select a School."
+        )
+
     new_dept = Department(
         name=payload.name, 
         code=payload.code.upper(), 
-        phase_number=payload.phase_number
+        phase_number=payload.phase_number,
+        school_id=final_school_id
     )
     session.add(new_dept)
     await session.commit()
     await session.refresh(new_dept)
     return new_dept
 
+
 @router.get("/departments", response_model=List[Department])
 async def list_departments(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin), 
 ):
-    result = await session.execute(select(Department).order_by(Department.phase_number, Department.name))
+    result = await session.execute(
+        select(Department)
+        .options(selectinload(Department.school)) 
+        .order_by(Department.phase_number, Department.name)
+    )
     return result.scalars().all()
 
-@router.delete("/departments/{dept_id}", status_code=204)
+
+@router.delete("/departments/{identifier}", status_code=204)
 async def delete_department(
-    dept_id: int,
+    identifier: str,
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin), 
 ):
-    dept = await session.get(Department, dept_id)
+    if identifier.isdigit():
+        stmt = select(Department).where(Department.id == int(identifier))
+    else:
+        stmt = select(Department).where(Department.code == identifier.upper())
+        
+    result = await session.execute(stmt)
+    dept = result.scalar_one_or_none()
+
     if not dept:
         raise HTTPException(404, detail="Department not found")
+        
     try:
         await session.delete(dept)
         await session.commit()
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(400, detail="Cannot delete department. It has linked student or staff records.")
+    return None
+
+
+# ===================================================================
+# ✅ PROGRAMME MANAGEMENT (NEW)
+# ===================================================================
+@router.post("/programmes", response_model=ProgrammeRead, status_code=status.HTTP_201_CREATED)
+async def create_programme(
+    payload: ProgrammeCreate,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    # 1. Resolve Department
+    stmt = select(Department).where(Department.code == payload.department_code.upper().strip())
+    res = await session.execute(stmt)
+    department = res.scalar_one_or_none()
+    
+    if not department:
+        raise HTTPException(400, f"Invalid Department Code: {payload.department_code}")
+        
+    # 2. Check Duplicates (Code must be unique globally)
+    existing = await session.execute(select(Programme).where(Programme.code == payload.code.upper().strip()))
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, f"Programme Code '{payload.code}' already exists.")
+
+    # 3. Create
+    prog = Programme(
+        name=payload.name,
+        code=payload.code.upper().strip(),
+        department_id=department.id
+    )
+    session.add(prog)
+    await session.commit()
+    await session.refresh(prog)
+    return prog
+
+@router.get("/programmes", response_model=List[ProgrammeRead])
+async def list_programmes(
+    department_code: Optional[str] = None,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    query = select(Programme).order_by(Programme.name)
+    
+    if department_code:
+        query = query.join(Department).where(Department.code == department_code.upper().strip())
+        
+    res = await session.execute(query)
+    return res.scalars().all()
+
+@router.delete("/programmes/{identifier}", status_code=204)
+async def delete_programme(
+    identifier: str, # ID or Code
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    if identifier.isdigit():
+        stmt = select(Programme).where(Programme.id == int(identifier))
+    else:
+        stmt = select(Programme).where(Programme.code == identifier.upper().strip())
+        
+    res = await session.execute(stmt)
+    prog = res.scalar_one_or_none()
+    
+    if not prog:
+        raise HTTPException(404, "Programme not found")
+        
+    # Safety Check: Are students linked?
+    student_check = await session.execute(select(Student).where(Student.programme_id == prog.id).limit(1))
+    if student_check.scalar():
+         raise HTTPException(400, "Cannot delete Programme: Students are enrolled in it.")
+         
+    try:
+        await session.delete(prog)
+        await session.commit()
     except Exception:
         await session.rollback()
-        raise HTTPException(400, detail="Cannot delete department. It has linked records.")
+        raise HTTPException(400, "Deletion failed. Ensure no Specializations are linked.")
+    return None
+
+
+# ===================================================================
+# ✅ SPECIALIZATION MANAGEMENT (NEW)
+# ===================================================================
+@router.post("/specializations", response_model=SpecializationRead, status_code=status.HTTP_201_CREATED)
+async def create_specialization(
+    payload: SpecializationCreate,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    # 1. Resolve Programme
+    stmt = select(Programme).where(Programme.code == payload.programme_code.upper().strip())
+    res = await session.execute(stmt)
+    programme = res.scalar_one_or_none()
+    
+    if not programme:
+        raise HTTPException(400, f"Invalid Programme Code: {payload.programme_code}")
+        
+    # 2. Check Duplicates
+    existing = await session.execute(select(Specialization).where(Specialization.code == payload.code.upper().strip()))
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, f"Specialization Code '{payload.code}' already exists.")
+
+    # 3. Create
+    spec = Specialization(
+        name=payload.name,
+        code=payload.code.upper().strip(),
+        programme_id=programme.id
+    )
+    session.add(spec)
+    await session.commit()
+    await session.refresh(spec)
+    return spec
+
+@router.get("/specializations", response_model=List[SpecializationRead])
+async def list_specializations(
+    programme_code: Optional[str] = None,
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    query = select(Specialization).order_by(Specialization.name)
+    
+    if programme_code:
+        query = query.join(Programme).where(Programme.code == programme_code.upper().strip())
+        
+    res = await session.execute(query)
+    return res.scalars().all()
+
+@router.delete("/specializations/{identifier}", status_code=204)
+async def delete_specialization(
+    identifier: str, # ID or Code
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_admin),
+):
+    if identifier.isdigit():
+        stmt = select(Specialization).where(Specialization.id == int(identifier))
+    else:
+        stmt = select(Specialization).where(Specialization.code == identifier.upper().strip())
+        
+    res = await session.execute(stmt)
+    spec = res.scalar_one_or_none()
+    
+    if not spec:
+        raise HTTPException(404, "Specialization not found")
+        
+    # Safety Check: Are students linked?
+    student_check = await session.execute(select(Student).where(Student.specialization_id == spec.id).limit(1))
+    if student_check.scalar():
+         raise HTTPException(400, "Cannot delete Specialization: Students are enrolled in it.")
+         
+    try:
+        await session.delete(spec)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise HTTPException(500, "Internal Server Error during deletion.")
     return None
 
 
@@ -374,7 +598,12 @@ async def admin_get_student_by_id_or_roll(
             )
         )
     
-    query = query.options(selectinload(Student.school))
+    # ✅ Update to load Programme/Specialization
+    query = query.options(
+        selectinload(Student.school),
+        selectinload(Student.programme),
+        selectinload(Student.specialization)
+    )
 
     result = await session.execute(query)
     student = result.scalar_one_or_none()
@@ -461,7 +690,7 @@ async def get_dashboard_stats(
             "completed": status_counts.get("completed", 0),
             "rejected": status_counts.get("rejected", 0)
         },
-        "top_bottlenecks": bottlenecks, 
+        "top_bottlenecks": bottlenecks,
         "recent_activity": recent_logs
     }
 
@@ -599,7 +828,7 @@ async def get_department_performance(
 
 
 # ===================================================================
-# EXPORT REPORTS (Updated: Replaced Batch with Department)
+# EXPORT REPORTS (Updated: Includes Dept Code)
 # ===================================================================
 @router.get("/reports/export-cleared")
 async def export_cleared_students(
@@ -611,7 +840,7 @@ async def export_cleared_students(
         select(Application, Student, School, Certificate, Department)
         .join(Student, Application.student_id == Student.id)
         .join(School, Student.school_id == School.id)
-        .outerjoin(Department, Student.department_id == Department.id) # <--- Join Department
+        .outerjoin(Department, Student.department_id == Department.id)
         .outerjoin(Certificate, Certificate.application_id == Application.id)
         .where(Application.status == "completed")
         .order_by(School.name, Student.roll_number)
@@ -622,10 +851,12 @@ async def export_cleared_students(
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # 2. Update Headers
+    # 2. Update Headers (Added 'Dept Code')
     writer.writerow([
         "Certificate Number", "Roll Number", "Enrollment No", "Student Name", 
-        "Father's Name", "Gender", "Category", "School", "Department", # <--- Changed from Batch
+        "Father's Name", "Gender", "Category", 
+        "School Code", "School Name",          # Split School info
+        "Dept Code", "Department Name",        # ADDED Dept Code
         "Admission Year", "Mobile", "Email", "Clearance Date", 
         "Application Ref (ID)", "System UUID" 
     ])
@@ -633,7 +864,13 @@ async def export_cleared_students(
     # 3. Write Rows
     for app, student, school, cert, department in rows:
         cert_num = cert.certificate_number if cert else "PENDING"
-        dept_name = department.name if department else "N/A" # Safe access
+        
+        # Safe Access for Department
+        dept_name = department.name if department else "N/A"
+        dept_code = department.code if department else "N/A" # Fetch Code
+
+        # Safe Access for School Code (assuming School model has a 'code' column)
+        school_code = getattr(school, "code", "N/A") 
 
         writer.writerow([
             cert_num,
@@ -643,8 +880,10 @@ async def export_cleared_students(
             student.father_name,
             student.gender,
             student.category,
-            school.name,
-            dept_name, # <--- Showing Department Name now
+            school_code,    # School Code
+            school.name,    # School Name
+            dept_code,      # Dept Code (e.g., "CSE")
+            dept_name,      # Dept Name (e.g., "Computer Science...")
             student.admission_year,
             student.mobile_number,
             student.email,

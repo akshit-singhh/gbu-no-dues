@@ -40,6 +40,7 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
             break
 
         # A. Fetch Stages for CURRENT Level
+        # (This handles both Single Stages like Dean AND Parallel Stages like Administration Depts)
         current_stages_res = await session.execute(
             select(ApplicationStage)
             .where(
@@ -59,15 +60,16 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
             break # Exit loop on rejection
 
         # C. Check Pending (Immediate Stop)
+        # If ANY stage in the current level is still pending, we wait.
         if any(s.status == ApplicationStatus.PENDING.value for s in current_stages):
-            # Ensure status is synced to IN_PROGRESS
+            # Ensure status is synced to IN_PROGRESS if we are waiting
             if app.status != ApplicationStatus.IN_PROGRESS.value:
                 app.status = ApplicationStatus.IN_PROGRESS.value
                 session.add(app)
             break # Exit loop, we are stuck here waiting for user action
 
         # D. All Approved? -> PREPARE TO MOVE UP
-        # Find next level
+        # Find next level strictly greater than current
         next_stage_res = await session.execute(
             select(ApplicationStage)
             .where(
@@ -80,23 +82,23 @@ async def _update_application_status(session: AsyncSession, application_id: UUID
 
         if next_stage:
             # MOVE UP and CONTINUE LOOP
+            # This unlocks the next level. The loop will run again to check if *that* level is auto-completable.
             logger.info(f"🚀 App {app.display_id}: Level {current_level} Complete. Moving to Level {next_stage.sequence_order}")
             app.current_stage_order = next_stage.sequence_order
             app.status = ApplicationStatus.IN_PROGRESS.value
             session.add(app)
-            # The loop continues! It will now check if this NEW level is *also* done.
         else:
             # NO NEXT STAGE -> FINISH
             logger.success(f"✅ App {app.display_id} is FULLY APPROVED. Certificate Issued.")
             app.status = ApplicationStatus.COMPLETED.value
             app.is_completed = True
-            app.current_stage_order = 999 
+            app.current_stage_order = 999 # Marker for completion
             app.remarks = "All stages cleared. Certificate Issued."
             
             session.add(app)
             await session.flush() 
 
-            # Trigger Certificate
+            # Trigger Certificate Generation
             try:
                 await generate_certificate_pdf(session, app.id, trigger_user_id)
             except Exception as e:
@@ -142,8 +144,10 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     if stage.status == ApplicationStatus.APPROVED.value: 
         raise ValueError("Already approved.")
 
+    # CRITICAL CHECK: Ensure application is actually AT this level
+    # This prevents HOD (Seq 2) from approving before Office (Seq 1) is done.
     if stage.sequence_order != application.current_stage_order:
-         raise ValueError("Cannot approve: Application is not currently at this stage level.")
+         raise ValueError(f"Cannot approve: Application is at Level {application.current_stage_order}, but this stage is Level {stage.sequence_order}.")
 
     reviewer = await _fetch_user(session, reviewer_id)
     if not reviewer: 
@@ -153,58 +157,54 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     # PERMISSION CHECKS (Updated for Flow B)
     # ---------------------------------------------------------
     
-    # 1. ADMIN (God Mode)
+    # 1. ADMIN (God Mode - Can override anything)
     if reviewer.role == UserRole.Admin:
         pass 
 
-    # 2. DEAN (School Check)
+    # 2. DEAN (Matches Student's School)
     elif reviewer.role == UserRole.Dean:
         if not getattr(reviewer, 'school_id', None):
              raise ValueError("Your Dean account has no School assigned.")
-        # Deans verify stages linked to their School ID
-        # Note: We check student.school_id because the Dean stage is created with school_id
+        
+        # Verify Dean belongs to the same school as the student
         if reviewer.school_id != student.school_id:
              raise ValueError("You are not the Dean of this student's school.")
 
-    # 3. HOD (Department Check)
+    # 3. HOD (Matches Stage's Academic Department)
     elif reviewer.role == UserRole.HOD:
         if not getattr(reviewer, 'department_id', None):
              raise ValueError("Your HOD account has no Department assigned.")
         
-        # Check if the stage is actually for this department
-        # (This prevents CS HOD from approving ME stage if logic ever got mixed up)
-        if not stage.department_id:
-             raise ValueError("This stage is not linked to any academic department.")
-        
+        # Verify HOD matches the stage's department
         if reviewer.department_id != stage.department_id:
              raise ValueError("You are not the HOD of this department.")
 
-    # 4. STAFF (Administrative Dept OR School Office)
+    # 4. STAFF (Handles both School Office & Admin Depts)
     elif reviewer.role == UserRole.Staff:
-        # A. School Office Staff (e.g., SOICT Office)
-        if getattr(reviewer, 'school_id', None):
-            # They can only approve stages linked to their School
-            # AND the stage itself must be a "School Level" stage (not a specific academic dept stage)
+        
+        # CASE A: SCHOOL OFFICE STAFF (Seq 1)
+        # They have a School ID but NO Department ID
+        if getattr(reviewer, 'school_id', None) and not getattr(reviewer, 'department_id', None):
             if not stage.school_id:
-                 raise ValueError("School Office Staff cannot approve generic/global stages.")
+                 raise ValueError("School Office Staff can only approve School-level stages.")
             if reviewer.school_id != stage.school_id:
                  raise ValueError("You do not belong to the School for this stage.")
-            
-            # (Optional) Ensure they aren't trying to approve a Dean's stage if that's restricted
-            pass 
 
-        # B. Department Staff (e.g., Library, Sports, Accounts)
+        # CASE B: DEPARTMENT STAFF (Library, Sports, Accounts - Seq 4 & 5)
+        # They have a Department ID
         elif getattr(reviewer, 'department_id', None):
             if not stage.department_id:
-                 raise ValueError("Staff cannot approve generic stages.")
+                 raise ValueError("Department Staff cannot approve School-level stages.")
             if reviewer.department_id != stage.department_id:
                  raise ValueError("You do not belong to the department for this stage.")
         
+        # CASE C: INVALID STAFF CONFIG
         else:
              raise ValueError("Your Staff account has no valid Department or School assignment.")
 
-    # 5. OTHER SPECIFIC ROLES (Legacy)
+    # 5. FALLBACK (Legacy or Role Mismatch)
     else:
+        # Generic check if roles match exact strings
         reviewer_role_str = reviewer.role.value if hasattr(reviewer.role, "value") else reviewer.role
         if stage.verifier_role != reviewer_role_str:
             raise ValueError(f"Access Denied: You are {reviewer_role_str}, but this stage requires {stage.verifier_role}.")
@@ -219,13 +219,13 @@ async def approve_stage(session: AsyncSession, stage_id: str, reviewer_id):
     
     session.add(stage)
 
-    # CRITICAL: Flush stage update so _update_application_status can see it
+    # CRITICAL: Flush stage update so _update_application_status sees the change
     await session.flush()
     
     # Update Global Status (This uses the LOCK to prevent race conditions)
     await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
-    # Commit the entire transaction (Stage Update + App Status Update)
+    # Commit everything
     await session.commit()
     await session.refresh(stage)
     
@@ -261,10 +261,9 @@ async def reject_stage(session: AsyncSession, stage_id: str, reviewer_id, remark
     stage.verified_at = datetime.utcnow()
     
     session.add(stage)
-    
     await session.flush()
     
-    # Update Global Status (Uses Locking)
+    # Update Global Status (Will mark App as REJECTED)
     await _update_application_status(session, stage.application_id, trigger_user_id=reviewer.id)
 
     await session.commit()

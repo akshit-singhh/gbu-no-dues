@@ -1,14 +1,8 @@
-# app/schemas/auth.py
-
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, Field, field_validator, ValidationInfo, ConfigDict
+from typing import Optional, Any
 from uuid import UUID
 
 from app.models.user import UserRole
-# Keeping these imports for response models
-from app.schemas.user import UserRead
-from app.schemas.student import StudentRead
-
 
 # -------------------------------------------------------------------
 # LOGIN REQUEST
@@ -16,16 +10,14 @@ from app.schemas.student import StudentRead
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    captcha_input: str = Field(..., description="The 5-character code from the CAPTCHA image")
-    captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
+    turnstile_token: str = Field(..., description="Token received from Cloudflare widget")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "email": "user@example.com",
                 "password": "password123",
-                "captcha_input": "....",
-                "captcha_hash": "...."
+                "turnstile_token": "0.xxxxxxx..."
             }
         }
 
@@ -46,7 +38,7 @@ class RegisterRequest(BaseModel):
     department_id: Optional[int] = None 
     school_id: Optional[int] = None
 
-    captcha_input: Optional[str] = Field(None, description="CAPTCHA code")
+    turnstile_token: Optional[str] = Field(None, description="Token received from Cloudflare widget")
 
     class Config:
         json_schema_extra = {
@@ -56,7 +48,8 @@ class RegisterRequest(BaseModel):
                 "password": "password123",
                 "role": "staff",
                 "department_code": "LIB",
-                "school_code": None
+                "school_code": None,
+                "turnstile_token": "0.xxxx..."
             }
         }
 
@@ -93,8 +86,7 @@ class TokenWithUser(Token):
 class StudentLoginRequest(BaseModel):
     identifier: str
     password: str
-    captcha_input: str = Field(..., description="The 5-character code from the CAPTCHA image")
-    captcha_hash: str = Field(..., description="The cryptographic hash returned by the captcha generator")
+    turnstile_token: str = Field(..., description="Token received from Cloudflare widget")
 
 
 class StudentWithSchool(BaseModel):
@@ -135,27 +127,31 @@ class StudentLoginResponse(BaseModel):
 
 
 class StudentRegisterRequest(BaseModel):
-    full_name: str
-    email: EmailStr
-    password: str
-    roll_number: str
     enrollment_number: str
-    mobile_number: str
-    school_id: int
+    roll_number: str
+    full_name: str
+    mobile_number: str = Field(..., min_length=10, max_length=15)
+    email: EmailStr
     
-    # Optional Profile Fields
-    father_name: Optional[str] = None
-    mother_name: Optional[str] = None
-    admission_year: Optional[int] = None
-    gender: Optional[str] = None
-    section: Optional[str] = None
-    admission_type: Optional[str] = None
-    is_hosteller: bool = False
-    hostel_name: Optional[str] = None
-    hostel_room: Optional[str] = None
+    # Code-First Fields
+    school_code: str 
+    school_id: Optional[int] = None 
 
-    captcha_input: str
-    captcha_hash: str
+    password: str
+    confirm_password: Optional[str] = None
+    
+
+    turnstile_token: str = Field(..., description="Token received from Cloudflare widget")
+
+    @field_validator("confirm_password")
+    @classmethod
+    def passwords_match(cls, v: Optional[str], info: ValidationInfo) -> str:
+        password = info.data.get("password")
+        if v is None:
+            return password if password else ""
+        if password and v != password:
+            raise ValueError("Passwords do not match")
+        return v
 
 
 # -------------------------------------------------------------------
@@ -163,7 +159,7 @@ class StudentRegisterRequest(BaseModel):
 # -------------------------------------------------------------------
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
-    captcha_input: Optional[str] = Field(None, description="CAPTCHA code")
+    turnstile_token: str = Field(..., description="Token received from Cloudflare widget")
 
 class VerifyOTPRequest(BaseModel):
     email: EmailStr
@@ -181,8 +177,10 @@ class ResetPasswordRequest(BaseModel):
 class SchoolCreateRequest(BaseModel):
     name: str
     code: str
+    requires_lab_clearance: bool = True
     
 class DepartmentCreateRequest(BaseModel):
     name: str
     phase_number: int
     code: str
+    school_code: Optional[str] = None

@@ -1,5 +1,3 @@
-# app/models/student.py
-
 from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, String, Integer, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -15,6 +13,8 @@ if TYPE_CHECKING:
     from app.models.school import School
     from app.models.department import Department
     from app.models.application import Application
+    # ✅ Added for Academic Hierarchy
+    from app.models.academic import Programme, Specialization
 
 class Student(SQLModel, table=True):
     __tablename__ = "students"
@@ -47,10 +47,22 @@ class Student(SQLModel, table=True):
         sa_column=Column(Integer, ForeignKey("schools.id"), nullable=False)
     )
 
-    # Link to Academic Department (Required for HOD Step)
+    # Link to Academic Department
     department_id: Optional[int] = Field(
         default=None,
         sa_column=Column(Integer, ForeignKey("departments.id"), nullable=True)
+    )
+
+    # ✅ NEW: Programme Link (e.g., B.Tech, M.Tech)
+    programme_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("programmes.id"), nullable=True)
+    )
+
+    # ✅ NEW: Specialization Link (e.g., AI, Data Science)
+    specialization_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("specializations.id"), nullable=True)
     )
 
     # ----------------------
@@ -76,7 +88,6 @@ class Student(SQLModel, table=True):
     # Academic Details
     # ----------------------
     section: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    # Batch Removed
     admission_year: Optional[int] = Field(default=None)
     admission_type: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
@@ -98,5 +109,9 @@ class Student(SQLModel, table=True):
     
     # Relationship to access Dept name
     department: Optional["Department"] = Relationship(back_populates="students")
+
+    # ✅ NEW: Relationships for Programme & Specialization
+    programme: Optional["Programme"] = Relationship()
+    specialization: Optional["Specialization"] = Relationship()
     
     applications: List["Application"] = Relationship(back_populates="student")

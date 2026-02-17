@@ -1,12 +1,10 @@
-# app/api/endpoints/applications.py
-
 import random
 import string
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
-from sqlalchemy import or_  # <--- ✅ REQUIRED for search logic
+from sqlalchemy import or_
 from uuid import UUID
 from typing import Any, List, Optional
 from datetime import datetime
@@ -16,6 +14,7 @@ from app.api.deps import get_db_session, get_application_or_404, get_current_use
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
 from app.models.department import Department
+from app.models.academic import Programme, Specialization # ✅ NEW IMPORT
 
 # Models & Schemas
 from app.models.student import Student 
@@ -119,16 +118,58 @@ async def create_application(
     student_res = await session.execute(select(Student).where(Student.id == student_id))
     student = student_res.scalar_one()
 
-    # Lookup Department ID from Code
-    stmt = select(Department).where(Department.code == payload.department_code)
-    dept_result = await session.execute(stmt)
-    department = dept_result.scalar_one_or_none()
+    # --- A. DEPARTMENT LOOKUP ---
+    if payload.department_code:
+        stmt = select(Department).where(Department.code == payload.department_code.upper().strip())
+        dept_result = await session.execute(stmt)
+        department = dept_result.scalar_one_or_none()
 
-    if not department:
-        raise HTTPException(status_code=400, detail=f"Invalid Department Code: {payload.department_code}")
+        if not department:
+            raise HTTPException(status_code=400, detail=f"Invalid Department Code: {payload.department_code}")
 
-    student.department_id = department.id 
+        student.department_id = department.id 
+    else:
+        # Fallback if student already has it set, otherwise error
+        if not student.department_id:
+            raise HTTPException(status_code=400, detail="Department Code is required.")
+        # If dept not in payload but on student, we need the Dept Object for validation below
+        department = await session.get(Department, student.department_id)
 
+    # --- B. PROGRAMME & SPECIALIZATION LOOKUP (NEW) ---
+    
+    # 1. Programme
+    if payload.programme_code:
+        stmt = select(Programme).where(Programme.code == payload.programme_code.upper().strip())
+        prog_res = await session.execute(stmt)
+        programme = prog_res.scalar_one_or_none()
+        
+        if not programme:
+            raise HTTPException(400, f"Invalid Programme Code: {payload.programme_code}")
+        
+        # Validation: Programme MUST belong to the selected Department
+        if department and programme.department_id != department.id:
+             raise HTTPException(400, f"Programme '{programme.name}' does not belong to Department '{department.name}'")
+             
+        student.programme_id = programme.id
+
+    # 2. Specialization (Optional but linked)
+    if payload.specialization_code:
+        stmt = select(Specialization).where(Specialization.code == payload.specialization_code.upper().strip())
+        spec_res = await session.execute(stmt)
+        specialization = spec_res.scalar_one_or_none()
+        
+        if not specialization:
+            raise HTTPException(400, f"Invalid Specialization Code: {payload.specialization_code}")
+            
+        # Validation: Specialization MUST belong to the selected Programme
+        # Note: If programme_code wasn't passed, we check against student.programme_id
+        current_prog_id = student.programme_id 
+        if current_prog_id and specialization.programme_id != current_prog_id:
+             raise HTTPException(400, "Selected Specialization does not belong to the selected Programme")
+
+        student.specialization_id = specialization.id
+
+    # --- C. OTHER PROFILE FIELDS ---
     student.father_name = payload.father_name
     student.mother_name = payload.mother_name
     student.gender = payload.gender
@@ -137,8 +178,15 @@ async def create_application(
     student.permanent_address = payload.permanent_address
     student.domicile = payload.domicile
     student.is_hosteller = payload.is_hosteller
-    student.hostel_name = payload.hostel_name
-    student.hostel_room = payload.hostel_room
+    
+    # Handle Hostel details (Clear if not hosteller)
+    if payload.is_hosteller:
+        student.hostel_name = payload.hostel_name
+        student.hostel_room = payload.hostel_room
+    else:
+        student.hostel_name = None
+        student.hostel_room = None
+        
     student.section = payload.section
     student.admission_year = payload.admission_year
     student.admission_type = payload.admission_type
@@ -155,7 +203,7 @@ async def create_application(
             break
         new_display_id = generate_display_id(student.roll_number)
 
-    # 3. Create Application
+    # 3. Create Application (Service logic handles Stage Generation)
     try:
         new_app = await create_application_for_student(
             session=session,
@@ -163,7 +211,7 @@ async def create_application(
             payload=payload 
         )
 
-        # 4. Link Details
+        # 4. Link Extra Details
         new_app.proof_document_url = payload.proof_document_url
         new_app.display_id = new_display_id 
         
@@ -172,8 +220,10 @@ async def create_application(
         await session.refresh(new_app)
 
     except ValueError as e:
+        await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        await session.rollback()
         print(f"CRITICAL ERROR creating application: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
@@ -208,6 +258,8 @@ async def get_my_application(
         .order_by(Application.created_at.desc())
         .options(
             selectinload(Application.student).selectinload(Student.school),
+            selectinload(Application.student).selectinload(Student.programme),      # ✅ Load Programme
+            selectinload(Application.student).selectinload(Student.specialization)  # ✅ Load Specialization
         )
     )
     app = result.scalars().first()
@@ -242,9 +294,7 @@ async def get_my_application(
     signed_proof_link = None
     if app.proof_document_url:
         signed_proof_link = get_signed_url(app.proof_document_url)
-
-    batch_val = getattr(app.student, 'batch', None)
-
+    
     return {
         "student": {
             "full_name": app.student.full_name,
@@ -253,7 +303,11 @@ async def get_my_application(
             "email": app.student.email,
             "mobile_number": app.student.mobile_number,
             "school_name": app.student.school.name if app.student.school else "N/A",
-            "batch": batch_val,
+            
+            # ✅ New Fields for Frontend Display
+            "programme_name": app.student.programme.name if app.student.programme else "N/A",
+            "specialization_name": app.student.specialization.name if app.student.specialization else "N/A",
+            
             "father_name": app.student.father_name,
             "hostel_name": app.student.hostel_name,
             "is_hosteller": app.student.is_hosteller, 
@@ -296,7 +350,7 @@ async def get_my_application(
     }
 
 # ------------------------------------------------------------
-# GET APPLICATION STATUS (✅ FIXED: Case Insensitive Search)
+# GET APPLICATION STATUS (Admin Search Logic)
 # ------------------------------------------------------------
 @router.get("/status", status_code=200)
 async def get_application_status(
@@ -326,8 +380,8 @@ async def get_application_status(
         # Try finding the student using OR operator
         stmt = select(Student).where(
             or_(
-                Student.roll_number.ilike(clean_q),       # ✅ Case-Insensitive
-                Student.enrollment_number.ilike(clean_q), # ✅ Case-Insensitive
+                Student.roll_number.ilike(clean_q),       # Case-Insensitive
+                Student.enrollment_number.ilike(clean_q), # Case-Insensitive
                 
                 # Heuristic to check if it's a valid UUID string before casting
                 Student.user_id == (UUID(clean_q) if clean_q.replace("-","").isalnum() and len(clean_q) > 20 else None),
@@ -356,6 +410,11 @@ async def get_application_status(
         select(Application)
         .where(Application.student_id == target_student_id)
         .order_by(Application.created_at.desc())
+        .options(
+            # ✅ Eager Load for Admin View too
+            selectinload(Application.student).selectinload(Student.programme),
+            selectinload(Application.student).selectinload(Student.specialization)
+        )
     )
     app = result.scalars().first()
 
@@ -415,8 +474,11 @@ async def get_application_status(
 
     return {
         "student_info": { 
-             "name": student.full_name if 'student' in locals() and student else "Student",
-             "roll": student.roll_number if 'student' in locals() and student else "",
+             "name": app.student.full_name if app.student else "Student",
+             "roll": app.student.roll_number if app.student else "",
+             # ✅ Display Prog/Spec in Admin Status View
+             "programme": app.student.programme.name if app.student.programme else "N/A",
+             "specialization": app.student.specialization.name if app.student.specialization else "N/A",
         },
         "application": {
             "id": app.id,
@@ -473,7 +535,7 @@ async def download_certificate(
 
 
 # ------------------------------------------------------------
-# RESUBMIT APPLICATION
+# RESUBMIT APPLICATION (FIXED FOR HOSTEL LOGIC)
 # ------------------------------------------------------------
 @router.patch("/{application_id}/resubmit", response_model=ApplicationRead)
 async def resubmit_application(
@@ -506,14 +568,50 @@ async def resubmit_application(
     # 3. Update Student Profile
     student = await session.get(Student, app.student_id)
     
-    # Lookup Department ID from Code
+    # --- A. DEPT UPDATE ---
     if payload.department_code:
-        stmt = select(Department).where(Department.code == payload.department_code)
+        stmt = select(Department).where(Department.code == payload.department_code.upper().strip())
         dept_result = await session.execute(stmt)
         department = dept_result.scalar_one_or_none()
         if department:
             student.department_id = department.id
+        else:
+             raise HTTPException(400, f"Invalid Department Code: {payload.department_code}")
 
+    # --- B. PROGRAMME UPDATE (NEW) ---
+    if payload.programme_code:
+        stmt = select(Programme).where(Programme.code == payload.programme_code.upper().strip())
+        prog_res = await session.execute(stmt)
+        programme = prog_res.scalar_one_or_none()
+        
+        if not programme:
+            raise HTTPException(400, f"Invalid Programme Code: {payload.programme_code}")
+        
+        # Verify ownership (Student might have changed Dept too, check against current dept)
+        current_dept_id = student.department_id 
+        if current_dept_id and programme.department_id != current_dept_id:
+             # Try fetching dept name for error msg
+             dept = await session.get(Department, current_dept_id)
+             raise HTTPException(400, f"Programme '{programme.name}' does not belong to Department '{dept.name}'")
+             
+        student.programme_id = programme.id
+
+    # --- C. SPECIALIZATION UPDATE (NEW) ---
+    if payload.specialization_code:
+        stmt = select(Specialization).where(Specialization.code == payload.specialization_code.upper().strip())
+        spec_res = await session.execute(stmt)
+        specialization = spec_res.scalar_one_or_none()
+        
+        if not specialization:
+            raise HTTPException(400, f"Invalid Specialization Code: {payload.specialization_code}")
+            
+        current_prog_id = student.programme_id 
+        if current_prog_id and specialization.programme_id != current_prog_id:
+             raise HTTPException(400, "Selected Specialization does not belong to the selected Programme")
+
+        student.specialization_id = specialization.id
+
+    # --- D. OTHER FIELDS ---
     if payload.father_name is not None: student.father_name = payload.father_name
     if payload.mother_name is not None: student.mother_name = payload.mother_name
     if payload.gender is not None: student.gender = payload.gender
@@ -530,7 +628,51 @@ async def resubmit_application(
     
     session.add(student)
 
-    # 4. Handle Remarks (Prioritize Student Remarks)
+    # ---------------------------------------------------------
+    # BUG FIX: DYNAMIC HOSTEL STAGE INJECTION/REMOVAL
+    # ---------------------------------------------------------
+    # Fetch existing stages WITH their department relationship loaded
+    stmt_stages = (
+        select(ApplicationStage)
+        .where(ApplicationStage.application_id == app.id)
+        .options(selectinload(ApplicationStage.department)) # Load department to check codes
+    )
+    res_stages = await session.execute(stmt_stages)
+    existing_stages = res_stages.scalars().all()
+
+    # Find if "Hostel" stage exists by checking Dept Code 'HST' or Role Logic
+    # We look for a stage linked to the Hostel Department
+    hostel_stage = next((s for s in existing_stages if s.department and s.department.code == "HST"), None)
+
+    # CASE A: Student IS now a Hosteller, but NO stage exists -> Inject It
+    if student.is_hosteller and not hostel_stage:
+        # Find the Hostel Department ID
+        dept_q = select(Department).where(Department.code == "HST")
+        dept_res = await session.execute(dept_q)
+        hostel_dept = dept_res.scalar_one_or_none()
+
+        if hostel_dept:
+            new_stage = ApplicationStage(
+                application_id=app.id,
+                department_id=hostel_dept.id,
+                verifier_role="staff",
+                # REMOVED: display_name="Hostel Administration", (Since attribute doesn't exist)
+                sequence_order=4, # Phase 2 (Parallel) for Flow B
+                status="pending"
+            )
+            session.add(new_stage)
+            print(f"✅ Injected missing Hostel Stage for App {app.display_id}")
+        else:
+            print("⚠️ Critical: Hostel Department 'HST' not found in DB. Cannot create stage.")
+
+    # CASE B: Student is NOT a Hosteller, but stage DOES exist -> Remove It
+    elif not student.is_hosteller and hostel_stage:
+        await session.delete(hostel_stage)
+        print(f"✅ Removed Hostel Stage for App {app.display_id}")
+
+    # ---------------------------------------------------------
+
+    # 4. Handle Remarks
     if payload.student_remarks:
         app.student_remarks = payload.student_remarks
 

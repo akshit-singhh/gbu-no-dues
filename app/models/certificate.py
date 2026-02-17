@@ -30,7 +30,7 @@ class Certificate(SQLModel, table=True):
         sa_column=Column(Text, nullable=False)
     )
     
-    # NEW: Human Readable Certificate Number
+    # Human Readable Certificate Number
     # e.g., GBU-ND-2025-AB12CD
     certificate_number: Optional[str] = Field(
         default=None,

@@ -1,10 +1,7 @@
-# app/api/endpoints/auth_student.py
-
 from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select, or_
+from sqlmodel import select
 from sqlalchemy.orm import selectinload
-import hashlib
 
 from app.api.deps import get_db_session
 from app.core.config import settings
@@ -21,22 +18,15 @@ from app.schemas.auth import (
 )
 
 # Services
-from app.services.auth_service import authenticate_student, get_user_by_email, register_student as register_student_service
+from app.services.auth_service import (
+    authenticate_student, 
+    get_user_by_email, 
+    create_student
+)
 from app.services.email_service import send_welcome_email
+from app.services.turnstile import verify_turnstile
 
 router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
-
-# ----------------------------------------------------------------
-# HELPER: Verify Captcha
-# ----------------------------------------------------------------
-def verify_captcha_hash(user_input: str, hash_from_frontend: str) -> bool:
-    if not user_input or not hash_from_frontend:
-        return False
-    normalized = user_input.strip().upper()
-    raw_str = f"{normalized}{settings.SECRET_KEY}"
-    calculated_hash = hashlib.sha256(raw_str.encode()).hexdigest()
-    return calculated_hash == hash_from_frontend
-
 
 # ----------------------------------------------------------------
 # 1. STUDENT REGISTRATION (Public)
@@ -53,20 +43,37 @@ async def register_student(
     Registers a new student, creates a User account, and auto-logins.
     """
     
-    # 1. CAPTCHA Verification
-    if not verify_captcha_hash(data.captcha_input, data.captcha_hash):
+    # 1. Turnstile Verification
+    client_ip = request.client.host if request.client else None
+    
+    if not data.turnstile_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Security check missing. Please refresh."
+        )
+
+    is_human = await verify_turnstile(data.turnstile_token, ip=client_ip)
+    if not is_human:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Invalid CAPTCHA code. Please refresh and try again."
+            detail="Security check failed. Please refresh and try again."
         )
 
     # 2. Perform Registration
     try:
-        # Call the service in auth_service.py
-        created_student = await register_student_service(session, data)
+        created_student = await create_student(
+            session=session,
+            enrollment_number=data.enrollment_number,
+            roll_number=data.roll_number,
+            full_name=data.full_name,
+            email=data.email,
+            mobile_number=data.mobile_number,
+            password=data.password,
+            school_code=data.school_code,
+            school_id=data.school_id
+        )
         
-        # 3. Reload Student with School Data (Critical for Response)
-        # We must re-fetch the student with the relationship loaded to avoid 500 Error
+        # 3. Reload Student
         refresh_query = (
             select(Student)
             .options(selectinload(Student.school))
@@ -75,21 +82,16 @@ async def register_student(
         refresh_res = await session.execute(refresh_query)
         student = refresh_res.scalar_one()
 
-        # 4. Fetch User for Token (User ID needed for Subject)
+        # 4. Fetch User
         user = await get_user_by_email(session, student.email)
         if not user:
             raise HTTPException(500, "Account created but user link failed.")
 
-        # 5. Send Welcome Email (Background Task)
-        email_data = {
-            "full_name": student.full_name,
-            "enrollment_number": student.enrollment_number,
-            "roll_number": student.roll_number,
-            "email": student.email
-        }
-        background_tasks.add_task(send_welcome_email, email_data)
+        # 5. Send Email (Optional)
+        # email_data = { ... }
+        # background_tasks.add_task(send_welcome_email, email_data) 
 
-        # 6. Generate Access Token (Auto-Login)
+        # 6. Generate Token
         access_token = create_access_token(
             subject=str(user.id),
             data={
@@ -100,7 +102,6 @@ async def register_student(
         )
 
         # 7. Prepare Response
-        # Safely extract school name
         student_dict = student.model_dump()
         student_dict["school_name"] = student.school.name if student.school else "Unknown School"
 
@@ -112,11 +113,18 @@ async def register_student(
             "student": student_dict
         }
 
+    # ✅ FIX: Let HTTPExceptions (like 400 Already Registered) bubble up!
+    except HTTPException as http_ex:
+        raise http_ex 
+
+    # ✅ FIX: Catch Service-level ValueErrors and turn them into 400s
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # ✅ FIX: Only catch unexpected errors as 500
     except Exception as e:
-        # Fallback for unexpected errors
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+        print(f"Registration Unexpected Error: {e}") 
+        raise HTTPException(status_code=500, detail="Registration failed due to a server error.")
 
 
 # ----------------------------------------------------------------
@@ -129,11 +137,17 @@ async def student_login_endpoint(
     data: StudentLoginRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
-    # 1. CAPTCHA Verification
-    if not verify_captcha_hash(data.captcha_input, data.captcha_hash):
+    # 1. Turnstile Verification
+    client_ip = request.client.host if request.client else None
+    
+    if not data.turnstile_token:
+        raise HTTPException(status_code=400, detail="Security check missing.")
+
+    is_human = await verify_turnstile(data.turnstile_token, ip=client_ip)
+    if not is_human:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Invalid CAPTCHA code. Please refresh and try again."
+            detail="Security check failed. Please refresh and try again."
         )
 
     # 2. Auth Logic

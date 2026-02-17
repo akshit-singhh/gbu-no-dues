@@ -1,14 +1,13 @@
-# app/models/school.py
-
 from typing import Optional, List, TYPE_CHECKING
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Boolean
 
 # Prevent circular imports
 if TYPE_CHECKING:
     from app.models.user import User
     from app.models.student import Student
     from app.models.application_stage import ApplicationStage
+    from app.models.department import Department
 
 class School(SQLModel, table=True):
     __tablename__ = "schools"
@@ -28,14 +27,20 @@ class School(SQLModel, table=True):
     )
 
     # --------------------------------------------------------
+    # DYNAMIC BUSINESS RULES
+    # --------------------------------------------------------
+    # Only LABS need to be toggled. Library is now mandatory for all.
+    requires_lab_clearance: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, default=True, nullable=False),
+        description="If False, students from this school skip the Lab stage."
+    )
+
+    # --------------------------------------------------------
     # RELATIONSHIPS
     # --------------------------------------------------------
     
-    # Users assigned to this school (Deans, Office Staff)
     users: List["User"] = Relationship(back_populates="school")
-
-    # Students enrolled in this school
     students: List["Student"] = Relationship(back_populates="school")
-    
-    # Approval Stages assigned to this school (Fixes the crash)
     stages: List["ApplicationStage"] = Relationship(back_populates="school")
+    departments: List["Department"] = Relationship(back_populates="school")

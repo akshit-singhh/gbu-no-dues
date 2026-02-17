@@ -8,7 +8,8 @@ FROM python:3.11-slim-bookworm
 # ------------------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    APP_ENV=production
+    APP_ENV=production \
+    PORT=8000
 
 # ------------------------------------------------------------
 # Set working directory
@@ -18,15 +19,12 @@ WORKDIR /app
 # ------------------------------------------------------------
 # System dependencies
 # ------------------------------------------------------------
-# Installs wkhtmltopdf and fonts (xfonts) needed for PDF generation
+# ✅ REMOVED: wkhtmltopdf & xfonts (Not needed for xhtml2pdf)
+# KEPT: build-essential & libpq-dev (Needed for asyncpg/database)
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
-    curl \
-    ca-certificates \
-    wkhtmltopdf \
-    xfonts-75dpi \
-    xfonts-base \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------
@@ -37,28 +35,26 @@ RUN pip install --upgrade pip
 # ------------------------------------------------------------
 # Install Python dependencies
 # ------------------------------------------------------------
-# Copy requirements.txt first for caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2. FIX: Install ONLY the new package (This creates a new fast layer)
-RUN pip install captcha==0.5.0
-
 # ------------------------------------------------------------
-# Create non-root user for security
+# Create non-root user
 # ------------------------------------------------------------
 RUN useradd -m fastapiuser
 
 # ------------------------------------------------------------
-# Copy project files
+# Setup Directories & Permissions
 # ------------------------------------------------------------
-# Copy app files after dependencies are installed
-COPY . .
+# Create temp folder for PDFs and assign ownership
+RUN mkdir -p /app/static/certificates && \
+    mkdir -p /app/temp_pdf && \
+    chown -R fastapiuser:fastapiuser /app
 
 # ------------------------------------------------------------
-# Fix file ownership
+# Copy project files
 # ------------------------------------------------------------
-RUN chown -R fastapiuser:fastapiuser /app
+COPY --chown=fastapiuser:fastapiuser . .
 
 # ------------------------------------------------------------
 # Switch to non-root user
@@ -66,16 +62,18 @@ RUN chown -R fastapiuser:fastapiuser /app
 USER fastapiuser
 
 # ------------------------------------------------------------
-# Expose port for the app
+# Expose port
 # ------------------------------------------------------------
 EXPOSE 8000
 
 # ------------------------------------------------------------
-# Start FastAPI with Gunicorn + UvicornWorker
+# Start Command
 # ------------------------------------------------------------
-# Using --forwarded-allow-ips="*" to fix the proxy error
-CMD gunicorn app.main:app \
-    -k uvicorn.workers.UvicornWorker \
-    --workers $(python -c "import os; print(max(1, (os.cpu_count() or 1) * 2 + 1))") \
-    --bind 0.0.0.0:8000 \
-    --forwarded-allow-ips="*"
+# Using JSON format for better signal handling (SIGTERM)
+CMD ["gunicorn", "app.main:app", \
+     "--workers", "4", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--bind", "0.0.0.0:8000", \
+     "--forwarded-allow-ips=*", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

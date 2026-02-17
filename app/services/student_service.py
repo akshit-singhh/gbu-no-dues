@@ -1,5 +1,3 @@
-# app/services/student_service.py
-
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, or_ 
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +6,8 @@ import uuid
 
 from app.models.student import Student
 from app.models.user import User, UserRole
+from app.models.school import School
+from app.models.department import Department
 from app.core.security import get_password_hash
 from app.schemas.student import StudentRegister, StudentUpdate
 
@@ -18,11 +18,39 @@ from app.schemas.student import StudentRegister, StudentUpdate
 async def register_student_and_user(session: AsyncSession, data: StudentRegister) -> Student:
     """
     Registers a student and creates a linked user account.
-    Prevents duplicates by checking Roll No AND Enrollment No first.
+    Resolves School Code to ID and prevents duplicates.
     """
 
-    # 1. ROBUST DUPLICATE CHECK
-    # Check if ANY of the unique identifiers already exist
+    # -----------------------------
+    # 0) RESOLVE SCHOOL CODE -> ID
+    # -----------------------------
+    final_school_id = data.school_id
+    
+    # If frontend sent a code (e.g., "SOICT"), look up the ID
+    if data.school_code:
+        stmt = select(School).where(School.code == data.school_code.strip().upper())
+        school_res = await session.execute(stmt)
+        school = school_res.scalar_one_or_none()
+        
+        if not school:
+             raise ValueError(f"Invalid School Code: {data.school_code}")
+        final_school_id = school.id
+
+    # Fallback validation
+    if not final_school_id:
+         raise ValueError("School selection is required (ID or Code).")
+
+    # -----------------------------
+    # 1) CHECK USER ACCOUNT (Fail Fast)
+    # -----------------------------
+    # Check User table first. If this email exists, no point checking Student table.
+    user_check = await session.execute(select(User).where(User.email == data.email))
+    if user_check.scalar_one_or_none():
+        raise ValueError("User account with this email already exists.")
+
+    # -----------------------------
+    # 2) DUPLICATE STUDENT CHECK
+    # -----------------------------
     query = select(Student).where(
         or_(
             Student.roll_number == data.roll_number,
@@ -42,7 +70,7 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
             raise ValueError(f"Email '{data.email}' is already registered.")
 
     # -----------------------------
-    # 2) CREATE STUDENT
+    # 3) CREATE STUDENT
     # -----------------------------
     student = Student(
         enrollment_number=data.enrollment_number,
@@ -50,9 +78,9 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
         full_name=data.full_name,
         mobile_number=data.mobile_number,
         email=data.email,
-        school_id=data.school_id,
+        school_id=final_school_id, # Using Resolved ID
         
-        # Safe Mapping
+        # Safe Mapping (Defaults to None if field missing in Schema)
         father_name=getattr(data, 'father_name', None),
         mother_name=getattr(data, 'mother_name', None),
         admission_year=getattr(data, 'admission_year', None),
@@ -67,32 +95,26 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
     session.add(student)
 
     try:
-        await session.flush() # Generates ID, checks DB constraints
+        await session.flush() # Generates student.id
     except IntegrityError as e:
         await session.rollback()
+        # Clean up error message
         msg = str(e.orig).lower() if hasattr(e, 'orig') else str(e)
-        if "enrollment_number" in msg: raise ValueError("Enrollment number conflict in DB")
-        if "roll_number" in msg: raise ValueError("Roll number conflict in DB")
-        if "email" in msg: raise ValueError("Email conflict in DB")
-        raise ValueError(f"Database error during student creation: {msg}")
+        if "enrollment_number" in msg: raise ValueError("Enrollment number conflict.")
+        if "roll_number" in msg: raise ValueError("Roll number conflict.")
+        raise ValueError(f"Database error: {msg}")
 
     # -----------------------------
-    # 3) CREATE LINKED USER ACCOUNT
+    # 4) CREATE LINKED USER
     # -----------------------------
-    
-    # Check if a User account with this email exists (independent of Student table)
-    user_check = await session.execute(select(User).where(User.email == data.email))
-    if user_check.scalar_one_or_none():
-        await session.rollback() # Rollback the student we just flushed
-        raise ValueError("User account with this email already exists.")
-
     user = User(
         id=uuid.uuid4(),
         name=data.full_name,
         email=data.email,
         password_hash=get_password_hash(data.password),
-        role=UserRole.Student,  # Use the Enum directly
-        student_id=student.id,
+        role=UserRole.Student,
+        student_id=student.id, # Link to the student we just created
+        school_id=final_school_id, 
         is_active=True
     )
 
@@ -105,11 +127,11 @@ async def register_student_and_user(session: AsyncSession, data: StudentRegister
 
     except IntegrityError as e:
         await session.rollback()
-        raise ValueError(f"Failed to create linked user account: {str(e)}")
+        raise ValueError(f"Failed to create user account: {str(e)}")
 
 
 # ------------------------------------------------------------
-# UPDATE STUDENT PROFILE (GENERAL UPDATE)
+# UPDATE STUDENT PROFILE (Smart Update)
 # ------------------------------------------------------------
 async def update_student_profile(
     session: AsyncSession, 
@@ -117,7 +139,11 @@ async def update_student_profile(
     update_data: StudentUpdate
 ) -> Student:
 
-    result = await session.execute(select(Student).where(Student.id == student_id))
+    result = await session.execute(
+        select(Student)
+        .where(Student.id == student_id)
+        .options(selectinload(Student.school), selectinload(Student.department))
+    )
     student = result.scalar_one_or_none()
 
     if not student:
@@ -126,6 +152,22 @@ async def update_student_profile(
     # Only update provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
 
+    # -----------------------------
+    # RESOLVE DEPARTMENT CODE -> ID
+    # -----------------------------
+    if "department_code" in update_dict:
+        dept_code = update_dict.pop("department_code")
+        if dept_code:
+            dept_res = await session.execute(select(Department).where(Department.code == dept_code))
+            dept = dept_res.scalar_one_or_none()
+            if dept:
+                student.department_id = dept.id
+            else:
+                raise ValueError(f"Invalid Department Code: {dept_code}")
+
+    # -----------------------------
+    # STANDARD FIELDS UPDATE
+    # -----------------------------
     for key, value in update_dict.items():
         if hasattr(student, key):
             setattr(student, key, value)
@@ -144,11 +186,11 @@ async def update_student_profile(
 # GET STUDENT BY ID
 # ------------------------------------------------------------
 async def get_student_by_id(session: AsyncSession, student_id: uuid.UUID) -> Student | None:
-    # Eager load school to prevent relationship errors
+    # Eager load school/dept to prevent relationship errors
     result = await session.execute(
         select(Student)
         .where(Student.id == student_id)
-        .options(selectinload(Student.school))
+        .options(selectinload(Student.school), selectinload(Student.department))
     )
     return result.scalar_one_or_none()
 
@@ -157,5 +199,8 @@ async def get_student_by_id(session: AsyncSession, student_id: uuid.UUID) -> Stu
 # LIST ALL STUDENTS
 # ------------------------------------------------------------
 async def list_students(session: AsyncSession) -> list[Student]:
-    result = await session.execute(select(Student))
+    result = await session.execute(
+        select(Student)
+        .options(selectinload(Student.school))
+    )
     return result.scalars().all()

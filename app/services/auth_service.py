@@ -1,5 +1,3 @@
-# app/services/auth_service.py
-
 import string
 from sqlmodel import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +6,8 @@ from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 import uuid
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+
 from loguru import logger 
 
 from app.models.user import User, UserRole
@@ -21,9 +20,8 @@ from app.core.security import (
     create_access_token,
 )
 from app.schemas.auth import TokenWithUser, StudentLoginResponse
-from app.schemas.student import StudentRegister
+# from app.schemas.student import StudentRegister # Removed: Service shouldn't depend on API schemas if possible
 from app.core.config import settings
-
 
 # ============================================================================
 # FETCH USER BY EMAIL
@@ -33,10 +31,6 @@ async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
     result = await session.execute(statement)
     return result.scalar_one_or_none()
 
-
-# ============================================================================
-# FETCH USER BY ID
-# ============================================================================
 async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
     try:
         uuid_obj = uuid.UUID(str(user_id))
@@ -47,17 +41,26 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
     result = await session.execute(statement)
     return result.scalar_one_or_none()
 
-
 # ============================================================================
-# REGISTER STUDENT (FIXED: Circular Dependency Resolution)
+# CREATE STUDENT (Renamed & Updated to match Endpoint)
 # ============================================================================
-async def register_student(session: AsyncSession, payload: StudentRegister) -> Student:
+async def create_student(
+    session: AsyncSession, 
+    enrollment_number: str,
+    roll_number: str,
+    full_name: str,
+    email: str,
+    mobile_number: str,
+    password: str,
+    school_code: str,
+    school_id: int | None = None
+) -> Student:
     """
     Creates a User account first, then creates a Student profile linked to it.
-    Resolves FK violation by 3-step process: Create User -> Create Student -> Update User.
+    Resolves School Code (e.g., 'SOICT') to School ID.
     """
     # 1. Check if Email Exists (User Table)
-    existing_user = await get_user_by_email(session, payload.email)
+    existing_user = await get_user_by_email(session, email)
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -67,8 +70,8 @@ async def register_student(session: AsyncSession, payload: StudentRegister) -> S
     # 2. Check Enrollment/Roll No (Student Table)
     stmt = select(Student).where(
         or_(
-            Student.enrollment_number == payload.enrollment_number,
-            Student.roll_number == payload.roll_number
+            Student.enrollment_number == enrollment_number,
+            Student.roll_number == roll_number
         )
     )
     result = await session.execute(stmt)
@@ -78,45 +81,61 @@ async def register_student(session: AsyncSession, payload: StudentRegister) -> S
             detail="Enrollment or Roll Number already registered"
         )
 
-    # 3. Generate IDs explicitly
+    # 3. RESOLVE SCHOOL CODE -> ID
+    final_school_id = school_id # Fallback if ID is passed directly
+    
+    # Check if school_code is provided (Preferred)
+    if school_code:
+        stmt = select(School).where(School.code == school_code.strip().upper())
+        school_res = await session.execute(stmt)
+        school = school_res.scalar_one_or_none()
+        
+        if not school:
+             raise HTTPException(400, f"Invalid School Code: {school_code}")
+        final_school_id = school.id
+
+    if not final_school_id:
+         raise HTTPException(400, "School selection is required.")
+
+    # 4. Generate IDs explicitly
     new_user_id = uuid.uuid4()
     new_student_id = uuid.uuid4()
 
-    # 4. STEP 1: Create User (student_id MUST be None initially)
+    # 5. STEP 1: Create User
     new_user = User(
         id=new_user_id,
-        name=payload.full_name,
-        email=payload.email,
-        password_hash=get_password_hash(payload.password),
+        name=full_name,
+        email=email,
+        password_hash=get_password_hash(password),
         role=UserRole.Student,
-        school_id=payload.school_id, 
-        student_id=None, # <--- IMPORTANT: Leave None to avoid FK error
+        school_id=final_school_id, # Link User to School
+        student_id=None,           # Leave None initially to avoid FK error
         is_active=True
     )
     session.add(new_user)
     
-    # 5. STEP 2: Create Student (Link to User is safe because User is added to session)
+    # 6. STEP 2: Create Student (Linked to User)
     new_student = Student(
         id=new_student_id,
-        user_id=new_user_id, # Link Backward to User
-        school_id=payload.school_id,
-        enrollment_number=payload.enrollment_number,
-        roll_number=payload.roll_number,
-        full_name=payload.full_name,
-        mobile_number=payload.mobile_number,
-        email=payload.email
+        user_id=new_user_id, # Backward Link
+        school_id=final_school_id,
+        enrollment_number=enrollment_number,
+        roll_number=roll_number,
+        full_name=full_name,
+        mobile_number=mobile_number,
+        email=email
     )
     session.add(new_student)
 
     try:
-        # Flush to insert User and Student into DB (but in same transaction)
+        # Flush to generate IDs in DB transaction
         await session.flush()
 
-        # 6. STEP 3: Update User to link to Student
+        # 7. STEP 3: Update User to link to Student
         new_user.student_id = new_student_id
-        session.add(new_user) # Mark User as dirty/modified
+        session.add(new_user) 
 
-        # 7. Commit Transaction
+        # 8. Commit
         await session.commit()
         await session.refresh(new_student)
         return new_student
@@ -131,7 +150,7 @@ async def register_student(session: AsyncSession, payload: StudentRegister) -> S
 
 
 # ============================================================================
-# CREATE USER (General Admin Use)
+# CREATE USER (General Admin Use - Supports Flow B)
 # ============================================================================
 async def create_user(
     session: AsyncSession,
@@ -139,12 +158,16 @@ async def create_user(
     email: str,
     password: str,
     role: UserRole,
-    department_id: int | None = None,
+    department_id: int | None = None, # Passed as ID (Resolved by Endpoint)
     student_id: uuid.UUID | None = None,
-    school_id: int | None = None,
+    school_id: int | None = None,     # Passed as ID (Resolved by Endpoint)
 ) -> User:
+    """
+    Creates a user. 
+    Note: The calling endpoint (auth.py) is responsible for resolving 
+    Codes (e.g., 'ACC', 'SOICT') into the IDs passed here.
+    """
 
-    # Admin creation logic might differ, but generally safe to set student_id if student exists
     user_data = {
         "id": uuid.uuid4(),
         "name": name,
@@ -163,7 +186,7 @@ async def create_user(
     try:
         await session.commit()
         
-        # Refresh with Eager Load
+        # Refresh with Eager Load for response consistency
         stmt = (
             select(User)
             .options(
@@ -279,7 +302,7 @@ async def authenticate_student(
 
 
 # ============================================================================
-# CREATE LOGIN RESPONSE (Restored)
+# CREATE LOGIN RESPONSE
 # ============================================================================
 async def create_login_response(user: User, session: AsyncSession) -> TokenWithUser:
     role_str = str(user.role.value if hasattr(user.role, "value") else user.role).lower()
@@ -290,25 +313,29 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
     if user.student and user.student.school_id:
         user_school_id = user.student.school_id
 
-    # 1. Fetch Department Name
+    # 1. Fetch Department Info (Safe Code Access)
     department_name = None
+    department_code = None
     if user_dept_id:
         try:
-            result = await session.execute(
-                select(Department.name).where(Department.id == user_dept_id)
-            )
-            department_name = result.scalar_one_or_none()
+            result = await session.execute(select(Department).where(Department.id == user_dept_id))
+            dept = result.scalar_one_or_none()
+            if dept:
+                department_name = dept.name
+                department_code = dept.code
         except:
             pass
 
-    # 2. Fetch School Name
+    # 2. Fetch School Info (Safe Code Access)
     school_name = None
+    school_code = None
     if user_school_id:
         try:
-            result = await session.execute(
-                select(School.name).where(School.id == user_school_id)
-            )
-            school_name = result.scalar_one_or_none()
+            result = await session.execute(select(School).where(School.id == user_school_id))
+            school = result.scalar_one_or_none()
+            if school:
+                school_name = school.name
+                school_code = school.code
         except:
             pass
 
@@ -316,7 +343,9 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
     token_data = {
         "role": role_str,
         "department_id": user_dept_id,
+        "department_code": department_code, # Useful for frontend logic
         "school_id": user_school_id,
+        "school_code": school_code,         # Useful for frontend logic
     }
     
     if user.student_id:
@@ -343,7 +372,7 @@ async def create_login_response(user: User, session: AsyncSession) -> TokenWithU
 
 
 # ============================================================================
-# PASSWORD RESET UTILS
+# PASSWORD RESET UTILS (Standard)
 # ============================================================================
 async def request_password_reset(session: AsyncSession, email: str):
     """
@@ -484,7 +513,7 @@ async def update_user(
         else:
             user.school_id = school_id
 
-    # 4. Save & Return (With Eager Loading)
+    # 4. Save & Return
     try:
         await session.commit()
         

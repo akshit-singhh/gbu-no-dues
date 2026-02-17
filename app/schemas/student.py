@@ -1,27 +1,27 @@
-# app/schemas/student.py
-
-from pydantic import BaseModel, EmailStr, field_validator, ValidationInfo, ConfigDict, model_validator
+from pydantic import BaseModel, EmailStr, field_validator, ValidationInfo, ConfigDict, model_validator, Field
 from typing import Optional, Any
 from uuid import UUID
 from datetime import date, datetime
 
 # ------------------------------------------------------------
-# STUDENT REGISTRATION (Public)
+# STUDENT REGISTRATION (Code-First Approach)
 # ------------------------------------------------------------
 class StudentRegister(BaseModel):
     enrollment_number: str
     roll_number: str
     full_name: str
-    mobile_number: str
+    mobile_number: str = Field(..., min_length=10, max_length=15)
     email: EmailStr
     
-    # Linked to School
-    school_id: int
+    # School is required for initial registration to route them correctly
+    school_code: str 
+    school_id: Optional[int] = None # Optional fallback
 
     password: str
     confirm_password: Optional[str] = None
-    captcha_input: str
-    captcha_hash: str
+    
+    # ✅ CHANGE: Replaced old Captcha with Cloudflare Turnstile
+    turnstile_token: str
 
     @field_validator("confirm_password")
     @classmethod
@@ -61,10 +61,13 @@ class StudentUpdate(BaseModel):
     
     # Allow updating Academic Dept via Code (Robust)
     department_code: Optional[str] = None 
-    department_id: Optional[int] = None # Kept for backward compatibility
+    department_id: Optional[int] = None 
+    
+    # ✅ NEW: Allow updating Programme & Specialization
+    programme_code: Optional[str] = None
+    specialization_code: Optional[str] = None
     
     section: Optional[str] = None
-    batch: Optional[str] = None
     admission_year: Optional[int] = None
     admission_type: Optional[str] = None
     
@@ -98,6 +101,8 @@ class StudentRead(BaseModel):
     # IDs
     school_id: Optional[int] = None
     department_id: Optional[int] = None
+    programme_id: Optional[int] = None
+    specialization_id: Optional[int] = None
 
     # Names & Codes (Populated via Validator for UI convenience)
     school_name: Optional[str] = None
@@ -106,8 +111,14 @@ class StudentRead(BaseModel):
     department_name: Optional[str] = None
     department_code: Optional[str] = None
 
+    # ✅ NEW: Display Programme & Specialization info
+    programme_name: Optional[str] = None
+    programme_code: Optional[str] = None
+    
+    specialization_name: Optional[str] = None
+    specialization_code: Optional[str] = None
+
     section: Optional[str] = None
-    batch: Optional[str] = None
     admission_year: Optional[int] = None
     admission_type: Optional[str] = None
 
@@ -118,10 +129,14 @@ class StudentRead(BaseModel):
     # Validator to extract Names & Codes from Relationships
     @model_validator(mode='before')
     @classmethod
-    def flatten_school_dept_details(cls, data: Any) -> Any:
+    def flatten_details(cls, data: Any) -> Any:
         if isinstance(data, dict):
             return data
         
+        # Helper to safely get attribute from object or dict
+        def get_attr(obj, attr):
+            return getattr(obj, attr, None) if obj else None
+
         # If it's a SQLModel/ORM object
         return {
             "id": data.id,
@@ -141,18 +156,27 @@ class StudentRead(BaseModel):
             "hostel_name": data.hostel_name,
             "hostel_room": data.hostel_room,
             
+            # --- School ---
             "school_id": data.school_id,
-            # Handle relationship safely
-            "school_name": data.school.name if getattr(data, "school", None) else None,
-            "school_code": getattr(data.school, "code", None) if getattr(data, "school", None) else None,
+            "school_name": get_attr(data.school, "name"),
+            "school_code": get_attr(data.school, "code"),
             
+            # --- Department ---
             "department_id": data.department_id,
-            # Handle relationship safely
-            "department_name": data.department.name if getattr(data, "department", None) else None,
-            "department_code": getattr(data.department, "code", None) if getattr(data, "department", None) else None,
+            "department_name": get_attr(data.department, "name"),
+            "department_code": get_attr(data.department, "code"),
+
+            # --- ✅ Programme ---
+            "programme_id": data.programme_id,
+            "programme_name": get_attr(data.programme, "name"),
+            "programme_code": get_attr(data.programme, "code"),
+
+            # --- ✅ Specialization ---
+            "specialization_id": data.specialization_id,
+            "specialization_name": get_attr(data.specialization, "name"),
+            "specialization_code": get_attr(data.specialization, "code"),
             
             "section": data.section,
-            "batch": data.batch,
             "admission_year": data.admission_year,
             "admission_type": data.admission_type,
             "created_at": data.created_at

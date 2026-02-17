@@ -12,19 +12,20 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlmodel import SQLModel
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 1. ENVIRONMENT CONFIGURATION
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
+ENV = os.getenv("ENV", "development").lower()  # default to development if not set
 
 if not DATABASE_URL:
     raise RuntimeError("❌ DATABASE_URL is not set")
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 2. SSL CONTEXT
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 def make_ssl_context():
     """
     Creates a standard SSL context for cloud database connections.
@@ -35,24 +36,33 @@ def make_ssl_context():
     return ctx
 
 
-# -----------------------------------------------------------------------------
-# 3. CONNECTION ARGUMENTS
-# -----------------------------------------------------------------------------
-# Since we are using Session Mode (Port 5432), we can use standard settings.
-# We no longer need to disable prepared statements.
-connect_args = {
-    "ssl": make_ssl_context(),
-    "server_settings": {
-        "jit": "off",          # Optimization: Disables JIT compilation for faster simple queries
-        "timezone": "UTC",     # Force UTC for consistency across regions
-        "application_name": "gbu_no_dues_prod"
+# -------------------------------------------------------------------------
+# 3. CONNECTION ARGUMENTS (Dynamic Based on ENV)
+# -------------------------------------------------------------------------
+if ENV == "production":
+    logger.info("🔐 Production Mode: SSL Enabled")
+    connect_args = {
+        "ssl": make_ssl_context(),
+        "server_settings": {
+            "jit": "off",
+            "timezone": "UTC",
+            "application_name": "gbu_no_dues_prod"
+        }
     }
-}
+else:
+    logger.info("🛠 Development Mode: SSL Disabled")
+    connect_args = {
+        "server_settings": {
+            "jit": "off",
+            "timezone": "UTC",
+            "application_name": "gbu_no_dues_local"
+        }
+    }
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 4. ENGINE CONFIGURATION
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,                # Disable SQL logging in production for performance
@@ -60,20 +70,18 @@ engine = create_async_engine(
     connect_args=connect_args,
     
     # Connection Pool Settings (Optimized for Supabase Session Mode)
-    # Supabase allows ~20-60 concurrent session connections on small tiers.
-    # We keep this conservative to avoid "Too many clients" errors.
     pool_size=10,              # Keep 10 stable connections
     max_overflow=10,           # Allow bursts up to 20 temporarily
-    pool_recycle=1800,         # Recycle every 30 mins (Standard for Session Mode)
+    pool_recycle=1800,         # Recycle every 30 mins
     pool_pre_ping=True,        # Health check before use (Heartbeat)
     pool_timeout=30,           # Wait up to 30s for a slot
     pool_use_lifo=True         # Reuse hot connections for better performance
 )
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 5. SESSION FACTORY
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -82,9 +90,9 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 6. DEPENDENCY INJECTION
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI Dependency to yield a database session.
@@ -101,9 +109,9 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # 7. LIFECYCLE HELPERS (Startup/Shutdown)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 async def init_db():
     """Initializes database tables. Should be run once on startup."""
     try:
@@ -113,6 +121,7 @@ async def init_db():
     except Exception as e:
         logger.critical(f"❌ DB Init Failed: {e}")
         raise
+
 
 async def test_connection():
     """Simple health check to verify latency and connectivity."""
