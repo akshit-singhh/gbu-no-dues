@@ -1,17 +1,17 @@
-# gbu-no-dues-management-backend
 
 ```
 gbu-no-dues-management-backend
+├─ .dockerignore
 ├─ app
 │  ├─ api
 │  │  ├─ deps.py
 │  │  ├─ endpoints
+│  │  │  ├─ academic.py
 │  │  │  ├─ account.py
 │  │  │  ├─ applications.py
 │  │  │  ├─ approvals.py
 │  │  │  ├─ auth.py
 │  │  │  ├─ auth_student.py
-│  │  │  ├─ captcha.py
 │  │  │  ├─ common.py
 │  │  │  ├─ jobs.py
 │  │  │  ├─ students.py
@@ -33,6 +33,7 @@ gbu-no-dues-management-backend
 │  │  └─ __init__.py
 │  ├─ main.py
 │  ├─ models
+│  │  ├─ academic.py
 │  │  ├─ application.py
 │  │  ├─ application_stage.py
 │  │  ├─ audit.py
@@ -44,6 +45,7 @@ gbu-no-dues-management-backend
 │  │  ├─ user.py
 │  │  └─ __init__.py
 │  ├─ schemas
+│  │  ├─ academic.py
 │  │  ├─ application.py
 │  │  ├─ approval.py
 │  │  ├─ approval_summary.py
@@ -62,6 +64,7 @@ gbu-no-dues-management-backend
 │  │  ├─ email_service.py
 │  │  ├─ pdf_service.py
 │  │  ├─ student_service.py
+│  │  ├─ turnstile.py
 │  │  └─ __init__.py
 │  ├─ static
 │  │  ├─ certificates
@@ -84,7 +87,6 @@ gbu-no-dues-management-backend
 │  ├─ templates
 │  │  ├─ email
 │  │  │  ├─ application_approved.html
-│  │  │  ├─ application_completed.html
 │  │  │  ├─ application_created.html
 │  │  │  ├─ application_rejected.html
 │  │  │  ├─ password_reset.html

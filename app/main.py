@@ -191,8 +191,7 @@ async def metrics():
 # ------------------------------------------------------------
 # CORS
 # ------------------------------------------------------------
-# Use settings.FRONTEND_URLS split by comma
-frontend_origins = [url.strip() for url in settings.FRONTEND_URLS.split(",")] if settings.FRONTEND_URLS else ["*"]
+frontend_origins = [url.rstrip("/") for url in settings.FRONTEND_URLS.split(",")] if settings.FRONTEND_URLS else ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -202,7 +201,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ------------------------------------------------------------
 # ROUTERS
 # ------------------------------------------------------------

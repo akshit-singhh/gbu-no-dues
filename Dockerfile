@@ -17,14 +17,25 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # ------------------------------------------------------------
-# System dependencies
+# System dependencies (UPDATED FOR WEASYPRINT)
 # ------------------------------------------------------------
-# ✅ REMOVED: wkhtmltopdf & xfonts (Not needed for xhtml2pdf)
-# KEPT: build-essential & libpq-dev (Needed for asyncpg/database)
+# ✅ ADDED: libpango, libcairo, libgdk-pixbuf, etc.
+# These are strictly required for WeasyPrint to work on Linux.
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     libpq-dev \
+    python3-dev \
+    python3-pip \
+    python3-setuptools \
+    python3-wheel \
+    python3-cffi \
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-0 \
+    libffi-dev \
+    shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------

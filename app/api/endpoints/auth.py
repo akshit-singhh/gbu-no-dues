@@ -364,15 +364,39 @@ async def create_programme(
 async def list_programmes(
     department_code: Optional[str] = None,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin),
+    _: User = Depends(get_current_user), # Use your admin check here
 ):
-    query = select(Programme).order_by(Programme.name)
+    # 1. Fetch data with eager loading
+    query = (
+        select(Programme)
+        .options(selectinload(Programme.department)) 
+        .order_by(Programme.name)
+    )
     
     if department_code:
         query = query.join(Department).where(Department.code == department_code.upper().strip())
         
     res = await session.execute(query)
-    return res.scalars().all()
+    items = res.scalars().all()
+
+    # 2. Map to the SCHEMA, not the DATABASE MODEL
+    results = []
+    for item in items:
+        # Convert the DB model to a dictionary
+        data = item.model_dump()
+        
+        # Manually add the parent info to the dictionary
+        if item.department:
+            data["department_name"] = item.department.name
+            data["department_code"] = item.department.code
+        else:
+            data["department_name"] = "N/A"
+            data["department_code"] = "N/A"
+            
+        # Add the dictionary to our results (Pydantic will validate it)
+        results.append(data)
+
+    return results
 
 @router.delete("/programmes/{identifier}", status_code=204)
 async def delete_programme(
@@ -442,15 +466,32 @@ async def create_specialization(
 async def list_specializations(
     programme_code: Optional[str] = None,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin),
+    _: User = Depends(get_current_user),
 ):
-    query = select(Specialization).order_by(Specialization.name)
+    stmt = (
+        select(Specialization)
+        .options(selectinload(Specialization.programme))
+        .order_by(Specialization.name)
+    )
     
     if programme_code:
-        query = query.join(Programme).where(Programme.code == programme_code.upper().strip())
+        stmt = stmt.join(Programme).where(Programme.code == programme_code.upper().strip())
         
-    res = await session.execute(query)
-    return res.scalars().all()
+    res = await session.execute(stmt)
+    items = res.scalars().all()
+
+    results = []
+    for item in items:
+        data = item.model_dump()
+        if item.programme:
+            data["programme_name"] = item.programme.name
+            data["programme_code"] = item.programme.code
+        else:
+            data["programme_name"] = "N/A"
+            data["programme_code"] = "N/A"
+        results.append(data)
+
+    return results
 
 @router.delete("/specializations/{identifier}", status_code=204)
 async def delete_specialization(
@@ -598,7 +639,7 @@ async def admin_get_student_by_id_or_roll(
             )
         )
     
-    # ✅ Update to load Programme/Specialization
+    # Update to load Programme/Specialization
     query = query.options(
         selectinload(Student.school),
         selectinload(Student.programme),

@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from typing import List
+from typing import List, Optional
+from sqlalchemy.orm import selectinload
+from sqlmodel import select
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db_session, require_admin
 from app.models.academic import Programme, Specialization
@@ -57,32 +60,49 @@ async def create_specialization(
     return spec
 
 # =================================================================
-# PUBLIC: GET DROPDOWNS (Cascading Logic)
+# PUBLIC: GET DROPDOWNS (Updated with Descriptive Mapping)
 # =================================================================
+
 @router.get("/programmes", response_model=List[ProgrammeRead])
 async def get_programmes(
-    department_code: str, 
+    department_code: Optional[str] = Query(None), # Made optional for "View All" support
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Fetch all programmes for a specific department (e.g., 'CSE')"""
-    query = (
-        select(Programme)
-        .join(Department)
-        .where(Department.code == department_code.upper())
-    )
+    """Fetch programmes with parent department details."""
+    # 1. Join Department table to fetch name/code
+    query = select(Programme).options(selectinload(Programme.department)).order_by(Programme.name)
+
+    if department_code:
+        query = query.join(Department).where(Department.code == department_code.upper().strip())
+    
     result = await session.execute(query)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+    # 2. Map descriptive fields for the UI
+    for item in items:
+        item.department_name = item.department.name if item.department else "N/A"
+        item.department_code = item.department.code if item.department else "N/A"
+    
+    return items
 
 @router.get("/specializations", response_model=List[SpecializationRead])
-async def get_specializations(
-    programme_code: str, 
-    session: AsyncSession = Depends(get_db_session)
-):
-    """Fetch all specializations for a specific programme (e.g., 'BTECH')"""
-    query = (
+async def list_specializations(session: AsyncSession = Depends(get_db_session)):
+    # 1. Fetch Specialization AND its Parent Programme
+    stmt = (
         select(Specialization)
-        .join(Programme)
-        .where(Programme.code == programme_code.upper())
+        .options(selectinload(Specialization.programme)) 
+        .order_by(Specialization.name)
     )
-    result = await session.execute(query)
-    return result.scalars().all()
+    result = await session.execute(stmt)
+    items = result.scalars().all()
+    
+    # 2. Map the parent data so the Schema can see it
+    for item in items:
+        if item.programme:
+            item.programme_name = item.programme.name
+            item.programme_code = item.programme.code
+        else:
+            item.programme_name = "Not Assigned"
+            item.programme_code = "N/A"
+            
+    return items

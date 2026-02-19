@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: gbu_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Trust the forwarded headers from the tunnel
+      - FORWARDED_ALLOW_IPS=*
+      # Add your domain to CORS so the frontend can talk to it
+      - BACKEND_CORS_ORIGINS=["http://localhost:3000","https://akshitsinghhdev.qzz.io","https://localhost:5173"]
+    volumes:
+      - ./app/static/certificates:/app/static/certificates
+
+  # TUNNEL SERVICE (SSH)
+  # This replaces Cloudflare. It uses standard SSH to expose your app.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: gbu_tunnel
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN} # Ensure this token is in your .env file
+    depends_on:
+      - backend

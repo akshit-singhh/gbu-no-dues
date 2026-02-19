@@ -77,7 +77,8 @@ class TokenWithUser(Token):
     school_id: Optional[int] = None
     school_name: Optional[str] = None
     student_id: Optional[str] = None
-
+    school_code: Optional[str] = None 
+    student_id: Optional[str] = None
 
 # -------------------------------------------------------------------
 # STUDENT AUTH SCHEMAS
@@ -98,6 +99,8 @@ class StudentWithSchool(BaseModel):
     mobile_number: Optional[str] = None
     school_id: Optional[int] = None
     school_name: Optional[str] = None
+    # ADDED: This fixes the "Dropdown Empty" issue in MyApplications.js
+    school_code: Optional[str] = None 
     department_id: Optional[int] = None
 
     father_name: Optional[str] = None
@@ -109,6 +112,10 @@ class StudentWithSchool(BaseModel):
     is_hosteller: bool = False
     hostel_name: Optional[str] = None
     hostel_room: Optional[str] = None
+    
+    #  Also adding these for the "N/A" fix in StudentDashboard
+    programme_name: Optional[str] = None
+    specialization_name: Optional[str] = None
     
     class Config:
         from_attributes = True

@@ -1,26 +1,37 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
-
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 # --- PROGRAMME ---
 class ProgrammeCreate(BaseModel):
     name: str
     code: str
-    department_code: str # Admin sends code ("CSE"), backend resolves ID
+    department_code: str 
 
 class ProgrammeRead(BaseModel):
     id: int
     name: str
     code: str
     department_id: int
+    # ✅ These must exist in the SCHEMA
+    department_name: Optional[str] = None
+    department_code: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 # --- SPECIALIZATION ---
 class SpecializationCreate(BaseModel):
     name: str
     code: str
-    programme_code: str # Admin sends code ("BTECH"), backend resolves ID
+    programme_code: str 
 
 class SpecializationRead(BaseModel):
     id: int
     name: str
     code: str
     programme_id: int
+    # ✅ These must exist in the SCHEMA
+    programme_name: Optional[str] = None
+    programme_code: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

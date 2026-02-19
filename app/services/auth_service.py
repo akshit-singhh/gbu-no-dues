@@ -222,7 +222,7 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
 
 
 # ============================================================================
-# AUTHENTICATE STUDENT LOGIN
+# AUTHENTICATE STUDENT LOGIN (Updated with School Code Mapping)
 # ============================================================================
 async def authenticate_student(
     session: AsyncSession,
@@ -235,7 +235,7 @@ async def authenticate_student(
     # 1. Fetch Student 
     query = (
         select(Student)
-        .options(selectinload(Student.school)) 
+        .options(selectinload(Student.school)) # ✅ Keep eager loading
         .where(
             or_(
                 Student.enrollment_number.ilike(identifier),
@@ -280,6 +280,7 @@ async def authenticate_student(
     if not verify_password(password, user.password_hash):
         return None
 
+    # Generate Token
     token = create_access_token(
         subject=str(user.id),
         data={
@@ -289,9 +290,21 @@ async def authenticate_student(
         }
     )
 
+    # ---------------------------------------------------------
+    # EXPLICIT DATA MAPPING
+    # ---------------------------------------------------------
+    # model_dump() only converts columns on the Student table.
+    # We must manually inject fields from the joined School table.
     student_dict = student.model_dump()
-    student_dict["school_name"] = student.school.name if student.school else "Unknown School"
+    
+    if student.school:
+        student_dict["school_name"] = student.school.name
+        student_dict["school_code"] = student.school.code  # Pulling 'SOICT'
+    else:
+        student_dict["school_name"] = "Unknown School"
+        student_dict["school_code"] = "N/A"
 
+    # Return the fully mapped response
     return StudentLoginResponse(
         access_token=token,
         token_type="bearer",

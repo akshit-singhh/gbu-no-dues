@@ -3,6 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, col
 from typing import List, Optional
 from pydantic import BaseModel
+from sqlalchemy import func
+from typing import Literal
 
 from app.core.rate_limiter import limiter
 from app.api.deps import get_db_session
@@ -51,58 +53,65 @@ async def get_schools(
     return [SchoolOption(name=s.name, code=s.code) for s in schools]
 
 # ----------------------------------------------------------
-# 2. GET DEPARTMENTS
+# 2. GET DEPARTMENTS (Unified Dropdown API)
 # ----------------------------------------------------------
 @router.get("/departments", response_model=List[DeptOption])
-@limiter.limit("20/minute")
 async def get_departments(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    type: str = Query("all", enum=["academic", "admin", "all"]),
-    school_code: Optional[str] = Query(None) 
+    school_code: Optional[str] = Query(None, description="Filter by School Code (e.g., SOICT)"),
+    type: Literal["academic", "all"] = Query("all", description="Filter by department type") 
 ):
+    # 1. Base Query (Sort Alphabetically)
     query = select(Department).order_by(Department.name)
     
+    # 2. FILTER: By Type (Crucial for "Create Program" dropdowns)
     if type == "academic":
+        # Only show Academic Departments (Phase 1), hide Admin depts like Library
         query = query.where(Department.phase_number == 1)
-        if school_code:
-            query = query.join(School).where(School.code == school_code)
-            
-    elif type == "admin":
-        query = query.where(col(Department.phase_number).in_([2, 3]))
-        
+
+    # 3. FILTER: By School Code (Crucial for "Student Registration")
+    if school_code:
+        # Case-insensitive match for robustness
+        query = query.join(School).where(func.lower(School.code) == school_code.lower())
+    
+    # Execute
     result = await session.execute(query)
     depts = result.scalars().all()
     
     return [
-        DeptOption(name=d.name, code=d.code, is_academic=(d.phase_number == 1)) 
+        DeptOption(
+            id=d.id,
+            name=d.name,
+            code=d.code, 
+            is_academic=(d.phase_number == 1)
+        ) 
         for d in depts
     ]
-
 # ----------------------------------------------------------
-# 3. GET PROGRAMMES (Full List or Filtered)
+# 3. GET PROGRAMMES (Support for Filtering)
 # ----------------------------------------------------------
 @router.get("/programmes", response_model=List[ProgrammeOption])
-@limiter.limit("20/minute")
 async def get_programmes(
     request: Request,
-    # Made Optional: If not provided, returns ALL programmes
-    department_code: Optional[str] = Query(None, description="Filter by Department Code (Optional)"),
+    department_code: Optional[str] = Query(None, description="Filter by Department Code"),
     session: AsyncSession = Depends(get_db_session)
 ):
+    # Join Department to get the department code/name
     query = select(Programme, Department).join(Department).order_by(Programme.name)
 
     if department_code:
         query = query.where(Department.code == department_code.upper().strip())
     
     result = await session.execute(query)
-    rows = result.all() # Returns tuples (Programme, Department)
+    rows = result.all() 
 
     return [
         ProgrammeOption(
+            id=p.id, # Useful if frontend needs ID later
             name=p.name, 
             code=p.code, 
-            department_code=d.code # Include Dept Code for frontend mapping
+            department_code=d.code 
         ) 
         for p, d in rows
     ]

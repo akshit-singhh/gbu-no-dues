@@ -14,7 +14,7 @@ from app.api.deps import get_db_session, get_application_or_404, get_current_use
 from app.core.rbac import AllowRoles
 from app.models.user import User, UserRole
 from app.models.department import Department
-from app.models.academic import Programme, Specialization # ✅ NEW IMPORT
+from app.models.academic import Programme, Specialization# ✅ NEW IMPORT
 
 # Models & Schemas
 from app.models.student import Student 
@@ -241,7 +241,7 @@ async def create_application(
 
 
 # ------------------------------------------------------------
-# GET MY APPLICATION (With Progress Percentage)
+# GET MY APPLICATION (Updated for Dropdown Filtering)
 # ------------------------------------------------------------
 @router.get("/my", status_code=200)
 async def get_my_application(
@@ -252,21 +252,63 @@ async def get_my_application(
     if not current_user.student_id:
         raise HTTPException(status_code=400, detail="No student linked to account")
 
-    result = await session.execute(
+    # 1. FETCH STUDENT PROFILE FIRST (Needed even if no application exists)
+    stmt_student = (
+        select(Student)
+        .options(
+            selectinload(Student.school), # ✅ Ensure School is loaded
+            selectinload(Student.department),
+            selectinload(Student.programme),
+            selectinload(Student.specialization)
+        )
+        .where(Student.id == current_user.student_id)
+    )
+    res_student = await session.execute(stmt_student)
+    student = res_student.scalar_one_or_none()
+
+    if not student:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+
+    # Prepare Student Data for UI (Available regardless of app status)
+    student_data = {
+        "full_name": student.full_name,
+        "enrollment_number": student.enrollment_number,
+        "roll_number": student.roll_number,
+        "email": student.email,
+        "mobile_number": student.mobile_number,
+        
+        # ✅ DATA FOR DROPDOWN FILTERING
+        "school_id": student.school_id, 
+        "school_name": student.school.name if student.school else "N/A",
+        "school_code": student.school.code if student.school else "N/A", # ✅ Ensure this is here
+        
+        "programme_name": student.programme.name if student.programme else "N/A",
+        "specialization_name": student.specialization.name if student.specialization else "N/A",
+        
+        "father_name": student.father_name,
+        "hostel_name": student.hostel_name,
+        "is_hosteller": student.is_hosteller,
+    }
+
+    # 2. FETCH APPLICATION
+    stmt_app = (
         select(Application)
         .where(Application.student_id == current_user.student_id)
         .order_by(Application.created_at.desc())
-        .options(
-            selectinload(Application.student).selectinload(Student.school),
-            selectinload(Application.student).selectinload(Student.programme),      # ✅ Load Programme
-            selectinload(Application.student).selectinload(Student.specialization)  # ✅ Load Specialization
-        )
     )
-    app = result.scalars().first()
+    res_app = await session.execute(stmt_app)
+    app = res_app.scalars().first()
 
+    # --- CASE A: NO APPLICATION SUBMITTED YET ---
     if not app:
-        return {"application": None, "message": "No application found."}
+        return {
+            "application": None,
+            "message": "No application found.",
+            "student": student_data # ✅ Sent so UI can filter Dept Dropdown
+        }
 
+    # --- CASE B: APPLICATION EXISTS ---
+    
     # Fetch Stages
     stage_result = await session.execute(
         select(ApplicationStage)
@@ -275,11 +317,11 @@ async def get_my_application(
     )
     stages = stage_result.scalars().all()
 
-    # --- 1. Calculate Progress Percentage ---
+    # Calculate Progress Percentage
     total_stages = len(stages)
-    approved_stages = sum(1 for s in stages if str(s.status) == str(ApplicationStatus.APPROVED.value))
+    approved_stages = sum(1 for s in stages if str(s.status) == "approved")
     
-    if str(app.status) == str(ApplicationStatus.COMPLETED.value):
+    if str(app.status) == "completed":
         progress_percentage = 100
     elif total_stages > 0:
         progress_percentage = int((approved_stages / total_stages) * 100)
@@ -287,31 +329,16 @@ async def get_my_application(
         progress_percentage = 0
 
     # Calculate Flags
-    is_rejected = any(s.status == str(ApplicationStatus.REJECTED.value) for s in stages)
-    rejected_stage = next((s for s in stages if s.status == str(ApplicationStatus.REJECTED.value)), None)
-    is_completed = str(app.status) == str(ApplicationStatus.COMPLETED.value)
+    is_rejected = any(s.status == "rejected" for s in stages)
+    rejected_stage = next((s for s in stages if s.status == "rejected"), None)
+    is_completed = str(app.status) == "completed"
 
     signed_proof_link = None
     if app.proof_document_url:
         signed_proof_link = get_signed_url(app.proof_document_url)
     
     return {
-        "student": {
-            "full_name": app.student.full_name,
-            "enrollment_number": app.student.enrollment_number,
-            "roll_number": app.student.roll_number,
-            "email": app.student.email,
-            "mobile_number": app.student.mobile_number,
-            "school_name": app.student.school.name if app.student.school else "N/A",
-            
-            # ✅ New Fields for Frontend Display
-            "programme_name": app.student.programme.name if app.student.programme else "N/A",
-            "specialization_name": app.student.specialization.name if app.student.specialization else "N/A",
-            
-            "father_name": app.student.father_name,
-            "hostel_name": app.student.hostel_name,
-            "is_hosteller": app.student.is_hosteller, 
-        },
+        "student": student_data,
         "application": {
             "id": app.id,
             "display_id": app.display_id, 
@@ -341,7 +368,7 @@ async def get_my_application(
         "flags": {
             "is_rejected": is_rejected,
             "is_completed": is_completed,
-            "is_in_progress": (str(app.status) == str(ApplicationStatus.IN_PROGRESS.value)),
+            "is_in_progress": (str(app.status) == "in_progress"),
         },
         "rejection_details": {
             "role": rejected_stage.verifier_role if rejected_stage else None,
