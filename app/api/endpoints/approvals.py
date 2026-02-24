@@ -18,6 +18,8 @@ from app.models.student import Student
 from app.models.department import Department
 from app.models.audit import AuditLog 
 from app.schemas.approval import StageActionRequest, StageActionResponse, AdminOverrideRequest
+from app.services.audit_service import log_activity, log_system_event
+from fastapi import Request # Ensure Request is imported for IP logging
 
 # Services
 from app.services.approval_service import approve_stage, reject_stage, _update_application_status
@@ -416,7 +418,7 @@ async def get_my_approval_history(
                     AuditLog.actor_id == current_user.id,  # My personal actions
                     and_(
                         Student.school_id == current_user.school_id,
-                        AuditLog.actor_role == "dean" # ✅ ONLY show Dean actions
+                        AuditLog.actor_role == "dean"
                     )
                 )
             )
@@ -431,7 +433,7 @@ async def get_my_approval_history(
                     AuditLog.actor_id == current_user.id,
                     and_(
                         Student.department_id == current_user.department_id,
-                        AuditLog.actor_role == "hod" # ✅ ONLY show HOD actions
+                        AuditLog.actor_role == "hod"
                     )
                 )
             )
@@ -445,7 +447,7 @@ async def get_my_approval_history(
                 AuditLog.actor_id == current_user.id,
                 and_(
                     Student.school_id == current_user.school_id,
-                    AuditLog.actor_role == "staff" # ✅ ONLY show Staff actions
+                    AuditLog.actor_role == "staff"
                 )
             )
         )
@@ -810,6 +812,7 @@ async def reject_stage_endpoint(
 @router.post("/admin/override-stage", response_model=StageActionResponse)
 async def admin_override_stage_action(
     payload: AdminOverrideRequest,
+    request: Request, # ✅ ADDED REQUEST FOR IP LOGGING
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(AllowRoles(UserRole.Admin)), 
@@ -898,6 +901,7 @@ async def admin_override_stage_action(
     else:
         raise HTTPException(400, "Invalid action.")
 
+    # 1. Existing Business Workflow Log
     background_tasks.add_task(
         log_activity,
         action=f"ADMIN_OVERRIDE_{action_type.upper()}",
@@ -907,6 +911,20 @@ async def admin_override_stage_action(
         application_id=stage.application_id,
         remarks=f"Overrode {target_entity} stage: {payload.remarks}",
         details={"stage_id": str(stage.id), "student_roll": student.roll_number}
+    )
+
+    # ✅ 2. NEW: System Security Log
+    background_tasks.add_task(
+        log_system_event,
+        event_type="SYSTEM_OVERRIDE",
+        actor_id=current_user.id,
+        resource_type="ApplicationStage",
+        resource_id=str(stage.id),
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        old_values={},
+        new_values={"action": action_type.upper(), "target_stage": target_entity, "remarks": payload.remarks},
+        status="SUCCESS"
     )
 
     return {

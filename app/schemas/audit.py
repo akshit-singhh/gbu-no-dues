@@ -19,3 +19,20 @@ class AuditLogRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SystemAuditLogRead(BaseModel):
+    id: UUID
+    actor_id: Optional[UUID] = None
+    actor_role: Optional[str] = None  # ✅ ADDED FIELD
+    event_type: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    old_values: Optional[Dict[str, Any]] = None
+    new_values: Optional[Dict[str, Any]] = None
+    status: str
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True

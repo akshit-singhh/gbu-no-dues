@@ -25,6 +25,7 @@ from app.services.auth_service import (
 )
 from app.services.email_service import send_welcome_email
 from app.services.turnstile import verify_turnstile
+from app.services.audit_service import log_system_event 
 
 router = APIRouter(prefix="/api/students", tags=["Auth (Students)"])
 
@@ -54,6 +55,15 @@ async def register_student(
 
     is_human = await verify_turnstile(data.turnstile_token, ip=client_ip)
     if not is_human:
+        # Log bot registration attempts
+        background_tasks.add_task(
+            log_system_event,
+            event_type="SECURITY_CHECK_FAILED",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={"attempted_email": data.email, "reason": "Turnstile validation failed (Student Register)"},
+            status="FAILURE"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail="Security check failed. Please refresh and try again."
@@ -86,11 +96,6 @@ async def register_student(
         user = await get_user_by_email(session, student.email)
         if not user:
             raise HTTPException(500, "Account created but user link failed.")
-
-        # 5. Send Email (Optional)
-        # email_data = { ... }
-        # background_tasks.add_task(send_welcome_email, email_data) 
-
         # 6. Generate Token
         access_token = create_access_token(
             subject=str(user.id),
@@ -113,15 +118,15 @@ async def register_student(
             "student": student_dict
         }
 
-    # ✅ FIX: Let HTTPExceptions (like 400 Already Registered) bubble up!
+    # Let HTTPExceptions (like 400 Already Registered) bubble up!
     except HTTPException as http_ex:
         raise http_ex 
 
-    # ✅ FIX: Catch Service-level ValueErrors and turn them into 400s
+    # Catch Service-level ValueErrors and turn them into 400s
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # ✅ FIX: Only catch unexpected errors as 500
+    # Only catch unexpected errors as 500
     except Exception as e:
         print(f"Registration Unexpected Error: {e}") 
         raise HTTPException(status_code=500, detail="Registration failed due to a server error.")
@@ -135,6 +140,7 @@ async def register_student(
 async def student_login_endpoint(
     request: Request, 
     data: StudentLoginRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session)
 ):
     # 1. Turnstile Verification
@@ -145,6 +151,15 @@ async def student_login_endpoint(
 
     is_human = await verify_turnstile(data.turnstile_token, ip=client_ip)
     if not is_human:
+        # Log bot login attempts
+        background_tasks.add_task(
+            log_system_event,
+            event_type="SECURITY_CHECK_FAILED",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={"attempted_identifier": data.identifier, "reason": "Turnstile validation failed (Student Login)"},
+            status="FAILURE"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail="Security check failed. Please refresh and try again."
@@ -154,6 +169,15 @@ async def student_login_endpoint(
     auth = await authenticate_student(session, data.identifier, data.password)
 
     if not auth:
+        # Log failed logins to track password guessing / brute force
+        background_tasks.add_task(
+            log_system_event,
+            event_type="LOGIN_FAILED",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={"attempted_identifier": data.identifier, "target": "Student Account"},
+            status="FAILURE"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Invalid credentials. Please check your Roll No / Enrollment No and password."

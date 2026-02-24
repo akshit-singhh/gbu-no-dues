@@ -5,10 +5,9 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from loguru import logger
 import sys
-import time
 import uuid
 import os
-import socket
+import asyncio
 import redis.asyncio as redis
 
 # Database & Seeding
@@ -16,14 +15,16 @@ from app.core.database import test_connection, init_db
 from app.core.seeding_logic import seed_all
 
 # Rate Limiting
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.rate_limiter import limiter
 
 # Config
 from app.core.config import settings
 
-# Routers (Import common last to avoid circular issues)
+# System Logging
+from app.services.audit_service import log_system_event
+
+# Routers
 from app.api.endpoints import (
     auth as auth_router,
     users as users_router,
@@ -35,7 +36,9 @@ from app.api.endpoints import (
     verification as verification_router,
     utils as utils_router,
     jobs as jobs_router,
-    common as common_router
+    common as common_router,
+    logs as logs_router,
+    metrics as metrics_router  # ✅ NEW: Imported the dedicated metrics router
 )
 
 # ------------------------------------------------------------
@@ -52,11 +55,6 @@ logger.add(
     backtrace=True,
     diagnose=True,
 )
-
-# ------------------------------------------------------------
-# GLOBAL METRICS
-# ------------------------------------------------------------
-START_TIME = time.time()
 
 # ------------------------------------------------------------
 # LIFESPAN (Startup / Shutdown)
@@ -106,7 +104,31 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CUSTOM RATE LIMIT HANDLER TO TRACK DOS/BRUTE FORCE
+@app.exception_handler(RateLimitExceeded)
+async def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    client_ip = request.client.host if request.client else "Unknown"
+    
+    # Run the logging task in the background safely
+    asyncio.create_task(
+        log_system_event(
+            event_type="SECURITY_BLOCK",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={
+                "path": request.url.path, 
+                "method": request.method, 
+                "detail": "Rate limit exceeded (Too Many Requests)"
+            },
+            status="FAILURE"
+        )
+    )
+    
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please try again later."}
+    )
 
 # ------------------------------------------------------------
 # MIDDLEWARE
@@ -157,50 +179,26 @@ if os.path.exists("app/static"):
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 # ------------------------------------------------------------
-# METRICS API
+# CORS (Fully Environment-Based)
 # ------------------------------------------------------------
-@app.get("/api/metrics", tags=["System"])
-async def metrics():
-    uptime_seconds = int(time.time() - START_TIME)
-    
-    db_status = "Disconnected"
-    try:
-        await test_connection()
-        db_status = "Connected"
-    except Exception:
-        db_status = "Error"
+from fastapi.middleware.cors import CORSMiddleware
 
-    smtp_status = "Not Configured"
-    if settings.SMTP_HOST:
-        try:
-            sock = socket.create_connection((settings.SMTP_HOST, settings.SMTP_PORT), timeout=2)
-            sock.close()
-            smtp_status = "Connected"
-        except Exception:
-            smtp_status = "Error"
-
-    return {
-        "status": "Online",
-        "version": app.version,
-        "uptime": uptime_seconds,
-        "database": db_status,
-        "smtp_server": smtp_status,
-        "environment": "Serverless (Vercel)" if os.environ.get("VERCEL") else "Development"
-    }
-
-# ------------------------------------------------------------
-# CORS
-# ------------------------------------------------------------
-frontend_origins = [url.rstrip("/") for url in settings.FRONTEND_URLS.split(",")] if settings.FRONTEND_URLS else ["*"]
+# Load origins from .env
+env_origins = (
+    [url.rstrip("/") for url in settings.FRONTEND_URL.split(",")]
+    if settings.FRONTEND_URL
+    else []
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=frontend_origins,
-    allow_origin_regex=settings.FRONTEND_REGEX or None,
+    allow_origins=env_origins,  # Only from .env
+    allow_origin_regex=settings.FRONTEND_REGEX or None,  # Optional regex support
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # ------------------------------------------------------------
 # ROUTERS
 # ------------------------------------------------------------
@@ -212,10 +210,12 @@ app.include_router(auth_student_router.router)
 app.include_router(applications_router.router)
 app.include_router(approvals_router.router)
 app.include_router(verification_router.router)
-# app.include_router(captcha_router.router) # ❌ Removed: No longer needed
+app.include_router(logs_router.router)
 app.include_router(utils_router.router)
 app.include_router(jobs_router.router)
 app.include_router(common_router.router)
+app.include_router(metrics_router.router)
+
 
 @app.get("/", tags=["System"])
 async def root():

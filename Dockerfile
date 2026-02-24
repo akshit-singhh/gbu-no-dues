@@ -19,7 +19,6 @@ WORKDIR /app
 # ------------------------------------------------------------
 # System dependencies (UPDATED FOR WEASYPRINT)
 # ------------------------------------------------------------
-# ✅ ADDED: libpango, libcairo, libgdk-pixbuf, etc.
 # These are strictly required for WeasyPrint to work on Linux.
 RUN apt-get update && apt-get install -y \
     build-essential \

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text
 from sqlmodel import select, or_
@@ -23,8 +23,7 @@ from app.schemas.auth import (
 )
 from app.schemas.user import UserRead, UserUpdate, UserListResponse
 from app.schemas.student import StudentRead
-from app.schemas.audit import AuditLogRead
-# ✅ NEW: Import Academic Schemas
+from app.schemas.audit import AuditLogRead, SystemAuditLogRead
 from app.schemas.academic import (
     ProgrammeCreate, ProgrammeRead,
     SpecializationCreate, SpecializationRead
@@ -36,7 +35,7 @@ from app.core.storage import get_signed_url
 from app.models.user import UserRole, User
 from app.models.school import School          
 from app.models.department import Department  
-# ✅ NEW: Import Academic Models
+from app.models.system_audit import SystemAuditLog
 from app.models.academic import Programme, Specialization
 from app.models.audit import AuditLog
 from app.models.application import Application 
@@ -56,6 +55,7 @@ from app.services.auth_service import (
 )
 from app.services.student_service import list_students
 from app.services.turnstile import verify_turnstile
+from app.services.audit_service import log_system_event
 
 from app.api.deps import get_db_session, get_current_user, require_admin
 
@@ -70,32 +70,55 @@ router = APIRouter(prefix="/api/admin", tags=["Auth (Admin)"])
 async def login(
     request: Request, 
     payload: LoginRequest,
+    background_tasks: BackgroundTasks, 
     session: AsyncSession = Depends(get_db_session)
 ):
     # 1. Verify Turnstile Token
     client_ip = request.client.host if request.client else None
     
-    # Check if token exists
     if not payload.turnstile_token:
-        raise HTTPException(
-            status_code=400, 
-            detail="Security check missing."
-        )
+        raise HTTPException(status_code=400, detail="Security check missing.")
 
     # Validate with Cloudflare
     is_human = await verify_turnstile(payload.turnstile_token, ip=client_ip)
     
     if not is_human:
-        raise HTTPException(
-            status_code=400, 
-            detail="Security check failed. Please refresh the page and try again."
+        # LOG SECURITY CHECK FAILURE (Bot detection)
+        background_tasks.add_task(
+            log_system_event,
+            event_type="SECURITY_CHECK_FAILED",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={"attempted_email": payload.email, "reason": "Turnstile validation failed"},
+            status="FAILURE"
         )
+        raise HTTPException(status_code=400, detail="Security check failed. Please refresh the page and try again.")
 
     # 2. Authenticate User
     user = await authenticate_user(session, payload.email, payload.password)
 
     if not user:
+        # LOG FAILED LOGIN ATTEMPT
+        background_tasks.add_task(
+            log_system_event,
+            event_type="LOGIN_FAILED",
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent"),
+            new_values={"attempted_email": payload.email},
+            status="FAILURE"
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # LOG SUCCESSFUL LOGIN
+    background_tasks.add_task(
+        log_system_event,
+        event_type="USER_LOGIN",
+        actor_id=user.id,
+        actor_role=user.role.value if hasattr(user.role, 'value') else user.role,
+        ip_address=client_ip,
+        user_agent=request.headers.get("user-agent"),
+        status="SUCCESS"
+    )
 
     return await create_login_response(user, session)
 
@@ -106,8 +129,10 @@ async def login(
 @router.post("/register-user", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def register_user(
     data: RegisterRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), 
+    current_admin: User = Depends(require_admin),
 ):
     """
     Creates a new user (Admin, Dean, HOD, Staff).
@@ -170,6 +195,20 @@ async def register_user(
         role=data.role,
         department_id=final_dept_id,
         school_id=final_school_id
+    )
+    
+    # LOG THE USER CREATION
+    background_tasks.add_task(
+        log_system_event,
+        event_type="USER_CREATED",
+        actor_id=current_admin.id,
+        actor_role=current_admin.role.value if hasattr(current_admin.role, 'value') else current_admin.role,
+        resource_type="User",
+        resource_id=str(new_user.id),
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        new_values={"email": new_user.email, "role": new_user.role.value if hasattr(new_user.role, 'value') else new_user.role},
+        status="SUCCESS"
     )
     
     return new_user
@@ -328,7 +367,7 @@ async def delete_department(
 
 
 # ===================================================================
-# ✅ PROGRAMME MANAGEMENT (NEW)
+# PROGRAMME MANAGEMENT (NEW)
 # ===================================================================
 @router.post("/programmes", response_model=ProgrammeRead, status_code=status.HTTP_201_CREATED)
 async def create_programme(
@@ -430,7 +469,7 @@ async def delete_programme(
 
 
 # ===================================================================
-# ✅ SPECIALIZATION MANAGEMENT (NEW)
+# SPECIALIZATION MANAGEMENT (NEW)
 # ===================================================================
 @router.post("/specializations", response_model=SpecializationRead, status_code=status.HTTP_201_CREATED)
 async def create_specialization(
@@ -523,7 +562,6 @@ async def delete_specialization(
         raise HTTPException(500, "Internal Server Error during deletion.")
     return None
 
-
 # -------------------------------------------------------------------
 # USER MANAGEMENT (List / Update / Delete)
 # -------------------------------------------------------------------
@@ -556,11 +594,26 @@ async def get_all_users(
 @router.delete("/users/{user_id}", status_code=204)
 async def remove_user(
     user_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), 
+    current_admin: User = Depends(require_admin),
 ):
     try:
         await delete_user_by_id(session, str(user_id))
+        
+        # LOG THE DELETION
+        background_tasks.add_task(
+            log_system_event,
+            event_type="USER_DELETED",
+            actor_id=current_admin.id,
+            actor_role=current_admin.role.value if hasattr(current_admin.role, 'value') else current_admin.role,
+            resource_type="User",
+            resource_id=str(user_id),
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            status="SUCCESS"
+        )
     except ValueError as e:
         raise HTTPException(404, detail=str(e))
     return None
@@ -569,8 +622,10 @@ async def remove_user(
 async def update_user_endpoint(
     user_id: str,
     data: UserUpdate,
+    request: Request,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), 
+    current_admin: User = Depends(require_admin), 
 ):
     if data.role == UserRole.Dean and not data.school_id and not data.school_code:
         raise HTTPException(400, detail="school_id/code is required for Dean users")
@@ -579,7 +634,16 @@ async def update_user_endpoint(
         raise HTTPException(400, detail="department_id/code is required for HOD users")
 
     try:
-        return await update_user(
+        # Fetch OLD values before updating to track Escalation
+        old_user = await session.get(User, UUID(user_id))
+        old_values = {}
+        if old_user:
+            old_values = {
+                "role": old_user.role.value if hasattr(old_user.role, 'value') else old_user.role,
+                "email": old_user.email
+            }
+
+        updated_user = await update_user(
             session,
             user_id=user_id,
             name=data.name,
@@ -588,6 +652,26 @@ async def update_user_endpoint(
             department_id=data.department_id,
             school_id=data.school_id 
         )
+
+        # LOG THE ROLE ESCALATION / UPDATE
+        background_tasks.add_task(
+            log_system_event,
+            event_type="USER_UPDATED",
+            actor_id=current_admin.id,
+            actor_role=current_admin.role.value if hasattr(current_admin.role, 'value') else current_admin.role,
+            resource_type="User",
+            resource_id=user_id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            old_values=old_values,
+            new_values={
+                "role": updated_user.role.value if hasattr(updated_user.role, 'value') else updated_user.role, 
+                "email": updated_user.email
+            },
+            status="SUCCESS"
+        )
+
+        return updated_user
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
 
@@ -671,70 +755,6 @@ async def admin_get_student_by_id_or_roll(
         "application": latest_app if latest_app else None,
         "is_active": latest_app.status in ["pending", "in_progress"] if latest_app else False
     }
-
-# -------------------------------------------------------------------
-# VIEW AUDIT LOGS
-# -------------------------------------------------------------------
-@router.get("/audit-logs", response_model=List[AuditLogRead])
-async def get_audit_logs(
-    action: Optional[str] = Query(None),
-    actor_role: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), 
-):
-    query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
-    if action:
-        query = query.where(AuditLog.action == action)
-    if actor_role:
-        query = query.where(AuditLog.actor_role == actor_role)
-    result = await session.execute(query)
-    return result.scalars().all()
-
-
-# ===================================================================
-# ADMIN DASHBOARD STATS
-# ===================================================================
-@router.get("/dashboard-stats")
-async def get_dashboard_stats(
-    session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(require_admin), 
-):
-    # 1. General Application Counts
-    status_query = select(Application.status, func.count(Application.id)).group_by(Application.status)
-    status_res = await session.execute(status_query)
-    status_counts = {row[0]: row[1] for row in status_res.all()}
-    total_apps = sum(status_counts.values())
-    
-    # 2. Bottlenecks
-    bottleneck_query = (
-        select(Department.name, func.count(ApplicationStage.id))
-        .join(ApplicationStage, ApplicationStage.department_id == Department.id)
-        .where(ApplicationStage.status == "pending")
-        .group_by(Department.name)
-        .order_by(func.count(ApplicationStage.id).desc())
-        .limit(5)
-    )
-    bottleneck_res = await session.execute(bottleneck_query)
-    bottlenecks = [{"department": row[0], "pending_count": row[1]} for row in bottleneck_res.all()]
-
-    # 3. Recent Activity
-    logs_query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(5)
-    logs_res = await session.execute(logs_query)
-    recent_logs = logs_res.scalars().all()
-
-    return {
-        "metrics": {
-            "total_applications": total_apps,
-            "pending": status_counts.get("pending", 0),
-            "in_progress": status_counts.get("in_progress", 0),
-            "completed": status_counts.get("completed", 0),
-            "rejected": status_counts.get("rejected", 0)
-        },
-        "top_bottlenecks": bottlenecks,
-        "recent_activity": recent_logs
-    }
-
 
 # ===================================================================
 # GLOBAL SEARCH

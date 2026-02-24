@@ -84,10 +84,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------
     # FRONTEND / CORS CONFIGURATION
     # ------------------------------------------------------------
-    FRONTEND_URL: str = "http://localhost:5173"
-    FRONTEND_URLS: str = "http://localhost:5173"
+    FRONTEND_URL: Optional[str] = None
     FRONTEND_REGEX: Optional[str] = None
-
     # ------------------------------------------------------------
     # EXTERNAL SERVICES
     # ------------------------------------------------------------

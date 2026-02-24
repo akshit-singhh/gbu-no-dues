@@ -67,7 +67,7 @@ async def get_departments(
     
     # 2. FILTER: By Type (Crucial for "Create Program" dropdowns)
     if type == "academic":
-        # Only show Academic Departments (Phase 1), hide Admin depts like Library
+        # Only show Academic Departments (Phase 1), hide Administration depts like Library
         query = query.where(Department.phase_number == 1)
 
     # 3. FILTER: By School Code (Crucial for "Student Registration")
