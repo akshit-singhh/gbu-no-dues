@@ -39,8 +39,18 @@ async def system_health():
     uptime_seconds = int(time.time() - START_TIME)
     
     db_status = "Disconnected"
+    db_latency_ms = None
+    
     try:
+        # Start high-resolution timer
+        db_start_time = time.perf_counter()
+        
         await test_connection()
+        
+        # End timer and calculate latency in milliseconds
+        db_end_time = time.perf_counter()
+        db_latency_ms = round((db_end_time - db_start_time) * 1000, 2)
+        
         db_status = "Connected"
     except Exception:
         db_status = "Error"
@@ -58,6 +68,7 @@ async def system_health():
         "status": "Online",
         "uptime_seconds": uptime_seconds,
         "database": db_status,
+        "database_latency_ms": db_latency_ms,  # Added to response
         "smtp_server": smtp_status,
         "environment": "Serverless (Vercel)" if os.environ.get("VERCEL") else "Development"
     }

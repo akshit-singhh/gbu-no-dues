@@ -15,6 +15,9 @@ services:
       - BACKEND_CORS_ORIGINS=["http://localhost:3000","https://akshitsinghhdev.qzz.io","https://localhost:5173"]
     volumes:
       - ./app/static/certificates:/app/static/certificates
+    dns:
+      - 1.1.1.1 # Cloudflare DNS
+      - 8.8.8.8 # Google DNS
 
   # TUNNEL SERVICE (SSH)
   # This replaces Cloudflare. It uses standard SSH to expose your app.

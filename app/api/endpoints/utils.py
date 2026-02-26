@@ -11,10 +11,9 @@ from loguru import logger
 router = APIRouter(prefix="/api/utils", tags=["Utilities"])
 
 # ----------------------------------------------------------------
-# 1. UPLOAD PROOF DOCUMENT (Protected with Rate Limit)
+# 1. UPLOAD PROOF DOCUMENT
 # ----------------------------------------------------------------
 @router.post("/upload-proof")
-@limiter.limit("5/minute")
 async def upload_proof(
     request: Request,
     file: UploadFile = File(...),

@@ -1,10 +1,13 @@
 # app/api/endpoints/students.py
+from sqlmodel import select
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db_session
 from app.core.rbac import AllowRoles
+from app.models.student import Student
 from app.models.user import User, UserRole
 from app.schemas.student import StudentRead, StudentUpdate
 
@@ -31,11 +34,24 @@ async def get_my_student_profile(
     """
     if not current_user.student_id:
         raise HTTPException(status_code=404, detail="Student profile not linked to this account")
+    stmt = (
+        select(Student)
+        .options(
+            selectinload(Student.school),
+            selectinload(Student.department),
+            selectinload(Student.programme),
+            selectinload(Student.specialization)
+        )
+        .where(Student.id == current_user.student_id)
+    )
+    
+    result = await session.execute(stmt)
+    student = result.scalar_one_or_none()
 
-    student = await get_student_by_id(session, current_user.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student record not found in database")
 
+    # Now Pydantic can read data.programme without triggering a lazy DB call
     return StudentRead.model_validate(student)
 
 
@@ -56,11 +72,27 @@ async def update_my_profile(
         raise HTTPException(status_code=404, detail="Student profile not linked")
 
     try:
-        updated_student = await update_student_profile(
+        # 1. Update the student (this modifies the DB but might not eager-load relationships)
+        await update_student_profile(
             session, 
             current_user.student_id, 
             update_data
         )
-        return StudentRead.model_validate(updated_student)
+        
+        stmt = (
+            select(Student)
+            .options(
+                selectinload(Student.school),
+                selectinload(Student.department),
+                selectinload(Student.programme),
+                selectinload(Student.specialization)
+            )
+            .where(Student.id == current_user.student_id)
+        )
+        result = await session.execute(stmt)
+        full_updated_student = result.scalar_one()
+
+        return StudentRead.model_validate(full_updated_student)
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

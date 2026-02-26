@@ -2,7 +2,9 @@ from pydantic import BaseModel, EmailStr, field_validator, ValidationInfo, Confi
 from typing import Optional, Any
 from uuid import UUID
 from datetime import date, datetime
-
+from sqlmodel import select
+from sqlalchemy.orm import selectinload
+from app.models.student import Student
 # ------------------------------------------------------------
 # STUDENT REGISTRATION (Code-First Approach)
 # ------------------------------------------------------------
