@@ -59,3 +59,5 @@ run_server.py
 pagekite.py
 run_mailpit.py
 run_fastapi_tunnel.py
+
+app/static/certificates/

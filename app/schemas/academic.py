@@ -13,7 +13,6 @@ class ProgrammeRead(BaseModel):
     name: str
     code: str
     department_id: int
-    # ✅ These must exist in the SCHEMA
     department_name: Optional[str] = None
     department_code: Optional[str] = None
 
@@ -30,7 +29,6 @@ class SpecializationRead(BaseModel):
     name: str
     code: str
     programme_id: int
-    # ✅ These must exist in the SCHEMA
     programme_name: Optional[str] = None
     programme_code: Optional[str] = None
 

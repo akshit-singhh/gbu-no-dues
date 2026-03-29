@@ -32,45 +32,91 @@ router = APIRouter(
 START_TIME = time.time()
 
 # ===================================================================
-# 1. GENERAL SYSTEM HEALTH (Public or Admin - depending on your needs)
+# 1. GENERAL SYSTEM HEALTH (Public or Admin - depending on needs)
 # ===================================================================
 @router.get("/health")
 async def system_health():
     uptime_seconds = int(time.time() - START_TIME)
-    
+
+    # ---------------------------------------------------
+    # DATABASE CHECK
+    # ---------------------------------------------------
     db_status = "Disconnected"
     db_latency_ms = None
-    
+
     try:
-        # Start high-resolution timer
         db_start_time = time.perf_counter()
-        
         await test_connection()
-        
-        # End timer and calculate latency in milliseconds
         db_end_time = time.perf_counter()
+
         db_latency_ms = round((db_end_time - db_start_time) * 1000, 2)
-        
         db_status = "Connected"
     except Exception:
         db_status = "Error"
 
+    # ---------------------------------------------------
+    # SMTP CHECK
+    # ---------------------------------------------------
     smtp_status = "Not Configured"
+
     if settings.SMTP_HOST:
         try:
-            sock = socket.create_connection((settings.SMTP_HOST, settings.SMTP_PORT), timeout=2)
+            sock = socket.create_connection(
+                (settings.SMTP_HOST, settings.SMTP_PORT),
+                timeout=2
+            )
             sock.close()
             smtp_status = "Connected"
         except Exception:
             smtp_status = "Error"
 
+    # ---------------------------------------------------
+    # REDIS CHECK
+    # ---------------------------------------------------
+    redis_status = "Disabled"
+    redis_latency_ms = None
+
+    if settings.REDIS_URL:
+        client = None
+        try:
+            client = redis.from_url(
+                settings.REDIS_URL,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+
+            redis_start = time.perf_counter()
+            await client.ping()
+            redis_end = time.perf_counter()
+
+            redis_latency_ms = round((redis_end - redis_start) * 1000, 2)
+            redis_status = "Connected"
+
+        except redis.ConnectionError:
+            redis_status = "Offline"
+        except Exception:
+            redis_status = "Error"
+        finally:
+            if client:
+                await client.close()
+
+    # ---------------------------------------------------
+    # FINAL RESPONSE
+    # ---------------------------------------------------
     return {
         "status": "Online",
         "uptime_seconds": uptime_seconds,
+        "environment": "Serverless (Vercel)" if os.environ.get("VERCEL") else "Development",
+
         "database": db_status,
-        "database_latency_ms": db_latency_ms,  # Added to response
+        "database_latency_ms": db_latency_ms,
+
+        "redis": redis_status,
+        "redis_latency_ms": redis_latency_ms,
+
         "smtp_server": smtp_status,
-        "environment": "Serverless (Vercel)" if os.environ.get("VERCEL") else "Development"
     }
 
 

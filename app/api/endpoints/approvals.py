@@ -1,7 +1,7 @@
 # app/api/endpoints/approvals.py
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, text
 from sqlalchemy import or_, and_
@@ -20,7 +20,7 @@ from app.models.audit import AuditLog
 from app.schemas.approval import StageActionRequest, StageActionResponse, AdminOverrideRequest
 from app.services.audit_service import log_activity, log_system_event
 from fastapi import Request # Ensure Request is imported for IP logging
-
+from app.core.storage import download_from_ftp
 # Services
 from app.services.approval_service import approve_stage, reject_stage, _update_application_status
 from app.services.email_service import send_application_rejected_email, send_application_approved_email
@@ -603,7 +603,18 @@ async def get_enriched_application_details(
         response_dict["active_stage"] = None
 
     if response_dict.get("proof_document_url"):
-        response_dict["proof_document_url"] = get_signed_url(response_dict["proof_document_url"])
+        raw_url = response_dict["proof_document_url"]
+        
+        # We assume you imported `get_signed_url` from app.core.storage
+        signed_url = get_signed_url(raw_url)
+        
+        # If the URL is NOT an HTTP link, it's an FTP path.
+        # We replace it with a direct call to our new backend download route!
+        if signed_url and not signed_url.startswith("http"):
+            # Change this line back to "applications"
+            response_dict["proof_document_url"] = f"/api/applications/{application_id}/proof-document"
+        else:
+            response_dict["proof_document_url"] = signed_url
 
     return response_dict
 
@@ -812,7 +823,7 @@ async def reject_stage_endpoint(
 @router.post("/admin/override-stage", response_model=StageActionResponse)
 async def admin_override_stage_action(
     payload: AdminOverrideRequest,
-    request: Request, # ✅ ADDED REQUEST FOR IP LOGGING
+    request: Request, # ADDED REQUEST FOR IP LOGGING
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(AllowRoles(UserRole.Admin)), 
@@ -913,7 +924,7 @@ async def admin_override_stage_action(
         details={"stage_id": str(stage.id), "student_roll": student.roll_number}
     )
 
-    # ✅ 2. NEW: System Security Log
+    # 2. NEW: System Security Log
     background_tasks.add_task(
         log_system_event,
         event_type="SYSTEM_OVERRIDE",

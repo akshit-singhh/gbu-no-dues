@@ -1,3 +1,5 @@
+#app/core/rate_limiter.py
+
 import os
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -58,9 +60,3 @@ except Exception as e:
     logger.error(f"❌ Failed to connect to Redis for Rate Limiting: {e}")
     # CRITICAL: Always fallback to memory so the API stays alive
     limiter = Limiter(key_func=get_real_ip)
-
-# ----------------------------------------------------------------
-# 4. GLOBAL CONFIGURATION
-# ----------------------------------------------------------------
-# This is where you set system-wide defaults if needed
-# limiter.limit("100/minute")(your_function)
