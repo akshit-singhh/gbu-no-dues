@@ -52,6 +52,26 @@ async def get_schools(
     schools = result.scalars().all()
     return [SchoolOption(name=s.name, code=s.code) for s in schools]
 
+
+class SchoolUpdate(BaseModel):
+    requires_lab_clearance: bool
+
+@router.patch("/{school_code}")
+async def update_school(school_code: str, update_data: SchoolUpdate, session: AsyncSession = Depends(get_db_session)):
+    # Look up the school by its string code (case-insensitive to be safe!)
+    query = select(School).where(func.lower(School.code) == school_code.lower())
+    result = await session.execute(query)
+    school = result.scalar_one_or_none()
+    
+    if not school:
+        raise HTTPException(status_code=404, detail=f"School with code '{school_code}' not found")
+    
+    school.requires_lab_clearance = update_data.requires_lab_clearance
+    session.add(school)
+    await session.commit()
+    
+    return {"message": f"{school.code} updated successfully"}
+
 # ----------------------------------------------------------
 # 2. GET DEPARTMENTS (Unified Dropdown API)
 # ----------------------------------------------------------

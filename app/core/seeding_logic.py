@@ -67,7 +67,7 @@ DEPARTMENTS_DATA = [
     {"name": "Finance & Accounts", "code": "ACC", "phase_number": 3},
 ]
 
-# ✅ NEW: Define Programmes & Specializations Mapping
+# NEW: Define Programmes & Specializations Mapping
 PROGRAMME_DATA = {
     "CSE": [
         {"name": "B.Tech (CSE)", "code": "BTECH_CSE", "specs": [
@@ -210,7 +210,7 @@ async def link_departments_to_schools(session):
                 logger.info(f"🔗 Linked {dept.code} -> {school.code}")
     await session.flush()
 
-# ✅ NEW: SEED PROGRAMMES & SPECIALIZATIONS
+# NEW: SEED PROGRAMMES & SPECIALIZATIONS
 async def seed_academic_hierarchy(session):
     for dept_code, programmes in PROGRAMME_DATA.items():
         # 1. Find the Department

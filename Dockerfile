@@ -81,7 +81,7 @@ EXPOSE 8000
 # ------------------------------------------------------------
 # Using JSON format for better signal handling (SIGTERM)
 CMD ["gunicorn", "app.main:app", \
-     "--workers", "2", \
+     "--workers", "1", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--forwarded-allow-ips=*", \

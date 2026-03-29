@@ -38,7 +38,7 @@ from app.api.endpoints import (
     jobs as jobs_router,
     common as common_router,
     logs as logs_router,
-    metrics as metrics_router  # ✅ NEW: Imported the dedicated metrics router
+    metrics as metrics_router
 )
 
 # ------------------------------------------------------------
@@ -56,9 +56,8 @@ logger.add(
     diagnose=True,
 )
 
-# ------------------------------------------------------------
-# LIFESPAN (Startup / Shutdown)
-# ------------------------------------------------------------
+from app.core import storage
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting GBU No Dues Backend...")
@@ -71,10 +70,8 @@ async def lifespan(app: FastAPI):
         # 2. REDIS CHECK
         if settings.REDIS_URL:
             try:
-                # Test connection with a Ping
                 r = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
                 await r.ping()
-                # Log success but mask the full URL password for security
                 host = settings.REDIS_URL.split("@")[-1]
                 logger.success(f"✅ Redis Connected: {host}")
                 await r.close()
@@ -83,10 +80,22 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️ No REDIS_URL found. Rate limiting is running in Memory (NOT Production Ready).")
 
-        # 3. DB INIT & SEEDING (Code-First Approach)
+        # 3. DB INIT & SEEDING
         await init_db()
-        await seed_all() # Runs Schools, Depts, Linking, and Admin creation
+        await seed_all()
         
+        # -----------------------------
+        # 4. FTP / Storage CHECK
+        # -----------------------------
+        if storage.STORAGE_BACKEND == "FTP":
+            ftp_connected = storage.check_ftp_connection()
+            if ftp_connected:
+                logger.success(f"✅ FTP server reachable: {storage.FTP_HOST}:{storage.FTP_PORT}")
+            else:
+                logger.error(f"❌ FTP server not reachable: {storage.FTP_HOST}:{storage.FTP_PORT}")
+        elif storage.STORAGE_BACKEND == "SUPABASE":
+            logger.success("✅ Supabase storage backend selected.")
+
     except Exception as e:
         logger.error(f"⚠️ Startup sequence partial failure: {e}")
 
